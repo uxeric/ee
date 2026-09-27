@@ -1,0 +1,198 @@
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+
+use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+use crate::keys::Action;
+
+#[derive(Clone, PartialEq, Eq, Hash)]
+pub struct KeyBinding {
+    pub code: KeyCode,
+    pub ctrl: bool,
+    pub alt: bool,
+    pub shift: bool,
+}
+
+impl KeyBinding {
+    pub fn matches(&self, event: &KeyEvent) -> bool {
+        event.code == self.code
+            && event.modifiers.contains(KeyModifiers::CONTROL) == self.ctrl
+            && event.modifiers.contains(KeyModifiers::ALT) == self.alt
+            && event.modifiers.contains(KeyModifiers::SHIFT) == self.shift
+    }
+}
+
+pub struct Config {
+    pub fallback_enabled: bool,
+    pub remaps: HashMap<Action, KeyBinding>,
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            fallback_enabled: true,
+            remaps: HashMap::new(),
+        }
+    }
+}
+
+pub fn path() -> Option<PathBuf> {
+    let base = std::env::var_os("XDG_CONFIG_HOME")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))?;
+    Some(base.join("eoe").join("config.toml"))
+}
+
+pub fn load() -> (Config, Option<String>) {
+    match path() {
+        Some(p) => load_from(&p),
+        None => (Config::default(), None),
+    }
+}
+
+pub fn load_from(path: &Path) -> (Config, Option<String>) {
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return (Config::default(), None);
+    };
+    match parse(&text) {
+        Ok(config) => (config, None),
+        Err(e) => (Config::default(), Some(format!("config: {} (using defaults)", e))),
+    }
+}
+
+pub fn parse(text: &str) -> Result<Config, String> {
+    let table: toml::Table = text.parse().map_err(|e: toml::de::Error| e.message().to_string())?;
+    let mut config = Config::default();
+    for (key, value) in &table {
+        match (key.as_str(), value) {
+            ("alt_fallback", toml::Value::Boolean(on)) => config.fallback_enabled = *on,
+            ("keys", toml::Value::Table(keys)) => {
+                for (name, binding) in keys {
+                    let action = Action::from_name(name).ok_or_else(|| format!("unknown action `{}`", name))?;
+                    let spec = binding.as_str().ok_or_else(|| format!("`{}` needs a key like \"ctrl+s\"", name))?;
+                    config.remaps.insert(action, parse_key(spec)?);
+                }
+            }
+            ("alt_fallback", _) => return Err("`alt_fallback` must be true or false".to_string()),
+            _ => return Err(format!("unknown setting `{}`", key)),
+        }
+    }
+    Ok(config)
+}
+
+fn parse_key(spec: &str) -> Result<KeyBinding, String> {
+    let bad = || format!("cannot read key `{}`", spec);
+    let parts: Vec<String> = spec.split('+').map(|p| p.trim().to_lowercase()).collect();
+    let (key, modifiers) = parts.split_last().ok_or_else(bad)?;
+    let mut binding = KeyBinding { code: KeyCode::Null, ctrl: false, alt: false, shift: false };
+    for m in modifiers {
+        match m.as_str() {
+            "ctrl" | "control" => binding.ctrl = true,
+            "alt" => binding.alt = true,
+            "shift" => binding.shift = true,
+            _ => return Err(bad()),
+        }
+    }
+    binding.code = match key.as_str() {
+        "enter" => KeyCode::Enter,
+        "esc" | "escape" => KeyCode::Esc,
+        "tab" => KeyCode::Tab,
+        "backspace" => KeyCode::Backspace,
+        "delete" => KeyCode::Delete,
+        "up" => KeyCode::Up,
+        "down" => KeyCode::Down,
+        "left" => KeyCode::Left,
+        "right" => KeyCode::Right,
+        "home" => KeyCode::Home,
+        "end" => KeyCode::End,
+        "pageup" => KeyCode::PageUp,
+        "pagedown" => KeyCode::PageDown,
+        "space" => KeyCode::Char(' '),
+        f if f.len() > 1 && f.starts_with('f') => KeyCode::F(f[1..].parse().map_err(|_| bad())?),
+        c if c.chars().count() == 1 => {
+            let c = c.chars().next().unwrap();
+            KeyCode::Char(if binding.shift { c.to_ascii_uppercase() } else { c })
+        }
+        _ => return Err(bad()),
+    };
+    Ok(binding)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn event(code: KeyCode, ctrl: bool, alt: bool, shift: bool) -> KeyEvent {
+        let mut modifiers = KeyModifiers::NONE;
+        if ctrl {
+            modifiers |= KeyModifiers::CONTROL;
+        }
+        if alt {
+            modifiers |= KeyModifiers::ALT;
+        }
+        if shift {
+            modifiers |= KeyModifiers::SHIFT;
+        }
+        KeyEvent::new(code, modifiers)
+    }
+
+    #[test]
+    fn binding_matches_exact_key() {
+        let binding = KeyBinding {
+            code: KeyCode::Char('s'),
+            ctrl: true,
+            alt: false,
+            shift: true,
+        };
+        assert!(binding.matches(&event(KeyCode::Char('s'), true, false, true)));
+        assert!(!binding.matches(&event(KeyCode::Char('s'), true, false, false)));
+        assert!(!binding.matches(&event(KeyCode::Char('s'), false, false, true)));
+        assert!(!binding.matches(&event(KeyCode::Char('s'), true, true, true)));
+        assert!(!binding.matches(&event(KeyCode::Char('x'), true, false, true)));
+    }
+
+    #[test]
+    fn config_file_sets_fallback_and_remaps_keys() {
+        let config = parse("alt_fallback = false\n[keys]\nsave_all = \"ctrl+g\"\nrename = \"shift+f6\"\nfind = \"Alt+Shift+Q\"\n").unwrap();
+        let km = crate::keys::Keymap::new(config);
+        assert_eq!(km.dispatch(&event(KeyCode::Char('g'), true, false, false)), Some(Action::SaveAll));
+        assert_eq!(km.dispatch(&event(KeyCode::Char('Q'), false, true, true)), Some(Action::Find));
+        assert_eq!(km.dispatch(&event(KeyCode::F(6), false, false, true)), Some(Action::Rename));
+        assert_eq!(km.dispatch(&event(KeyCode::Char('w'), false, true, false)), None, "alt fallback off");
+        assert_eq!(km.dispatch(&event(KeyCode::Char('s'), true, false, false)), Some(Action::SaveAll), "defaults still work");
+    }
+
+    #[test]
+    fn bad_config_is_reported_and_falls_back_to_defaults() {
+        let cases = [
+            ("[keys]\nteleport = \"ctrl+t\"", "unknown action `teleport`"),
+            ("[keys]\nfind = \"hyper+f\"", "cannot read key `hyper+f`"),
+            ("[keys]\nfind = 3", "`find` needs a key"),
+            ("alt_fallback = \"yes\"", "must be true or false"),
+            ("theme = \"neon\"", "unknown setting `theme`"),
+            ("alt_fallback = ", ""),
+        ];
+        for (text, expected) in cases {
+            let err = parse(text).err().unwrap_or_else(|| panic!("accepted {:?}", text));
+            assert!(err.contains(expected), "{:?} gave {:?}", text, err);
+        }
+        let dir = std::env::temp_dir().join(format!("ee-config-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("config.toml");
+        std::fs::write(&file, "[keys]\nteleport = \"ctrl+t\"").unwrap();
+        let (config, warning) = load_from(&file);
+        assert!(config.fallback_enabled && config.remaps.is_empty());
+        assert!(warning.unwrap().contains("unknown action"));
+        assert!(load_from(&dir.join("missing.toml")).1.is_none(), "no file, no warning");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn the_installer_writes_a_config_ee_accepts() {
+        let script = include_str!("../install.sh");
+        let start = script.find("<< 'EOF'\n").expect("installer config heredoc") + "<< 'EOF'\n".len();
+        let end = start + script[start..].find("\nEOF\n").expect("heredoc end");
+        let config = parse(&script[start..end]).unwrap();
+        assert!(config.fallback_enabled && config.remaps.is_empty());
+    }
+}

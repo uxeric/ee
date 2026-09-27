@@ -1,0 +1,7 @@
+# AI
+.overseer/
+AGENTS.md
+TODO.md
+
+# Rust
+target/
