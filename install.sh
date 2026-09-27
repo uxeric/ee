@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 # eoe installer: builds `ee` from source and installs it for the current user.
 #
-#   curl -fsSL https://raw.githubusercontent.com/uxeric/ee/main/install.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/uxeric/ee/HEAD/install.sh | bash
 #   ./install.sh                 # from a checkout: builds that checkout
 #   ./install.sh --uninstall     # removes ee (add --purge to remove the config too)
 #
 # Settings (environment variables):
 #   EOE_REPO        git URL to clone          (default: https://github.com/uxeric/ee.git)
-#   EOE_REF         branch or tag to build    (default: main)
+#   EOE_REF         branch or tag to build    (default: the repo's default branch)
 #   EOE_PREFIX      install prefix            (default: ~/.local, so ee goes in ~/.local/bin)
 #   EOE_SOURCE_DIR  build this directory instead of cloning
 #   EOE_YES=1       answer yes to prompts (e.g. installing Rust)
@@ -16,7 +16,7 @@
 set -euo pipefail
 
 REPO="${EOE_REPO:-https://github.com/uxeric/ee.git}"
-REF="${EOE_REF:-main}"
+REF="${EOE_REF:-}"
 PREFIX="${EOE_PREFIX:-$HOME/.local}"
 BIN_DIR="$PREFIX/bin"
 DATA_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/eoe"
@@ -117,14 +117,16 @@ find_source() {
     command -v git > /dev/null || die "git is needed to download eoe. Install git and run this again."
     SOURCE="$DATA_DIR/src"
     if [[ -d "$SOURCE/.git" ]]; then
-        git -C "$SOURCE" fetch --quiet --depth 1 origin "$REF" || die "Could not update $SOURCE from $REPO."
+        git -C "$SOURCE" fetch --quiet --depth 1 origin "${REF:-HEAD}" || die "Could not update $SOURCE from $REPO."
         git -C "$SOURCE" checkout --quiet --force FETCH_HEAD
-        ok "updated $SOURCE ($REF)"
+        ok "updated $SOURCE (${REF:-default branch})"
     else
         mkdir -p "$DATA_DIR"
-        git clone --quiet --depth 1 --branch "$REF" "$REPO" "$SOURCE" \
-            || die "Could not clone $REPO ($REF). Set EOE_REPO to the right URL."
-        ok "downloaded $REPO ($REF)"
+        local branch=()
+        [[ -n "$REF" ]] && branch=(--branch "$REF")
+        git clone --quiet --depth 1 "${branch[@]}" "$REPO" "$SOURCE" \
+            || die "Could not clone $REPO${REF:+ ($REF)}. Set EOE_REPO (or EOE_REF) to the right value."
+        ok "downloaded $REPO (${REF:-default branch})"
     fi
 }
 
