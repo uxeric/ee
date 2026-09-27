@@ -36,7 +36,7 @@ The project is `eoe`, the command is `ee`. Type it, jack in, edit text in neon.
 ## Jack in
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/uxeric/eoe/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/uxeric/ee/main/install.sh | bash
 ```
 
 The installer builds `ee` from source and installs it for you, no root needed. Run it again any time to update.
@@ -57,13 +57,13 @@ You need a terminal that passes `Ctrl` and `Alt` through: Alacritty, kitty, Ghos
 ./install.sh                          # build and install this checkout
 ./install.sh --uninstall              # remove ee (and its Omarchy launcher entry), keep your config
 ./install.sh --uninstall --purge      # remove ee and your config
-curl -fsSL https://raw.githubusercontent.com/uxeric/eoe/main/install.sh | bash -s -- --uninstall
+curl -fsSL https://raw.githubusercontent.com/uxeric/ee/main/install.sh | bash -s -- --uninstall
 ```
 
 | Variable | Default | What it sets |
 |---|---|---|
 | `EOE_PREFIX` | `~/.local` | Install prefix; `ee` goes in `$EOE_PREFIX/bin` |
-| `EOE_REPO` | `https://github.com/uxeric/eoe.git` | Where to download the source from |
+| `EOE_REPO` | `https://github.com/uxeric/ee.git` | Where to download the source from |
 | `EOE_REF` | `main` | The branch or tag to build |
 | `EOE_SOURCE_DIR` | | Build this directory instead of downloading |
 | `EOE_YES=1` | | Answer yes to prompts, such as installing Rust |

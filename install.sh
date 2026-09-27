@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 # eoe installer: builds `ee` from source and installs it for the current user.
 #
-#   curl -fsSL https://raw.githubusercontent.com/uxeric/eoe/main/install.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/uxeric/ee/main/install.sh | bash
 #   ./install.sh                 # from a checkout: builds that checkout
 #   ./install.sh --uninstall     # removes ee (add --purge to remove the config too)
 #
 # Settings (environment variables):
-#   EOE_REPO        git URL to clone          (default: https://github.com/uxeric/eoe.git)
+#   EOE_REPO        git URL to clone          (default: https://github.com/uxeric/ee.git)
 #   EOE_REF         branch or tag to build    (default: main)
 #   EOE_PREFIX      install prefix            (default: ~/.local, so ee goes in ~/.local/bin)
 #   EOE_SOURCE_DIR  build this directory instead of cloning
@@ -15,7 +15,7 @@
 
 set -euo pipefail
 
-REPO="${EOE_REPO:-https://github.com/uxeric/eoe.git}"
+REPO="${EOE_REPO:-https://github.com/uxeric/ee.git}"
 REF="${EOE_REF:-main}"
 PREFIX="${EOE_PREFIX:-$HOME/.local}"
 BIN_DIR="$PREFIX/bin"
