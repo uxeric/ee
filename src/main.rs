@@ -111,14 +111,16 @@ fn main() -> std::io::Result<()> {
     execute!(stdout(), DisableBracketedPaste, DisableMouseCapture, LeaveAlternateScreen)?;
     result?;
     if state.restart_for_update {
+        let exe = std::env::current_exe()?;
         let status = update::run_installer()?;
         if !status.success() {
             eprintln!("ee: the update did not finish; your previous version is still installed.");
             std::process::exit(status.code().unwrap_or(1));
         }
-        let exe = std::env::current_exe()?;
         use std::os::unix::process::CommandExt;
-        return Err(std::process::Command::new(exe).args(&args[1..]).exec());
+        let error = std::process::Command::new(&exe).args(&args[1..]).exec();
+        eprintln!("ee: updated, but could not restart {} ({}). Run ee again.", exe.display(), error);
+        std::process::exit(1);
     }
     Ok(())
 }
