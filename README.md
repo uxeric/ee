@@ -29,7 +29,7 @@ The project is `eoe`, the command is `ee`. Type it, jack in, edit text in neon.
 - [ -- ] plugin system not found (by design)
 ```
 
-`ee` is a plain-text editor for the terminal, built for [Omarchy](https://omarchy.org) and for people with WebStorm in their fingers. It does multi-cursor editing, renders markdown live while you write it, sends lines to the agent or shell next to it in [herdr](https://herdr.dev), and animates every move with [tachyonfx](https://github.com/ratatui/tachyonfx). It keeps your terminal's own background, so Omarchy's blur shows through the neon.
+`ee` is a plain-text editor for the terminal, built for [Omarchy](https://omarchy.org) (or whatever sub-optimal unix-like system you're running) and for people with WebStorm in their fingers. It does multi-cursor editing, renders markdown live while you write it, sends lines to the agent or shell next to it in [herdr](https://herdr.dev), and animates every move with [tachyonfx](https://github.com/ratatui/tachyonfx). It keeps your terminal's own background, so Omarchy's blur shows through the neon.
 
 <img src="assets/readme/divider.svg" width="100%" alt="">
 
