@@ -383,24 +383,24 @@ EOE_NO_FX=1 cargo run      # the debug build, no animations
 ## FAQ
 
 > [!IMPORTANT]
-> **Do you like the shortcut keys that I like?**<br>
+> **Do you want to add shortcut keys that I like?**<br>
 > Probably not.
 
 > [!NOTE]
-> **Will I ever include a plugin system?**<br>
-> Nope. Edit the codebase and extend it however you like.
+> **Will you ever include a plugin system?**<br>
+> Nope. Fork and edit the codebase and extend it however you like.
 
 > [!WARNING]
 > **Your design choices stink.**<br>
 > Yeah, probably. Take 5 minutes with an LLM and make it your own.
 
 > [!CAUTION]
-> **It's too cyberpunk.**<br>
-> Yes it is!
+> **It's too cyberpunk, and it has too many useless animations.**<br>
+> Yup.
 
 > [!TIP]
 > **Do you know that Easy Editor has dibs on the `ee` command?**<br>
-> Yup. Did you read the name of the editor? Eric's Own Editor. I can do what I want!
+> Ya. Did you read the name of the editor? Eric's Own Editor. I can do what I want!
 
 <div align="center">
 <br>
