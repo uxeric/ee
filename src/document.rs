@@ -86,13 +86,14 @@ pub struct Document {
     pub path: Option<String>,
     pub dirty: bool,
     pub scroll_top: Cell<usize>,
+    pub scroll_left: Cell<usize>,
     pub view_anchor: Cell<Option<((usize, usize), u64)>>,
     expansions: Vec<(Option<Selection>, (usize, usize))>,
     expanded_to: Option<Selection>,
     undo: Vec<Snapshot>,
     redo: Vec<Snapshot>,
     rev: u64,
-    markdown: RefCell<Option<(u64, Rc<MdView>)>>,
+    markdown: RefCell<Option<(u64, crate::theme::Palette, Rc<MdView>)>>,
 }
 
 impl Document {
@@ -108,6 +109,7 @@ impl Document {
             path: None,
             dirty: false,
             scroll_top: Cell::new(0),
+            scroll_left: Cell::new(0),
             view_anchor: Cell::new(None),
             expansions: Vec::new(),
             expanded_to: None,
@@ -131,6 +133,7 @@ impl Document {
             path: None,
             dirty: false,
             scroll_top: Cell::new(0),
+            scroll_left: Cell::new(0),
             view_anchor: Cell::new(None),
             expansions: Vec::new(),
             expanded_to: None,
@@ -1208,11 +1211,14 @@ impl Document {
             return None;
         }
         let mut cache = self.markdown.borrow_mut();
+        let palette = crate::theme::pal();
         match cache.as_ref() {
-            Some((rev, view)) if *rev == self.rev && view.lines.len() == self.lines.len() => Some(view.clone()),
+            Some((rev, built_with, view)) if *rev == self.rev && *built_with == palette && view.lines.len() == self.lines.len() => {
+                Some(view.clone())
+            }
             _ => {
                 let view = Rc::new(markdown::build(&self.lines));
-                *cache = Some((self.rev, view.clone()));
+                *cache = Some((self.rev, palette, view.clone()));
                 Some(view)
             }
         }
@@ -1332,27 +1338,29 @@ impl Document {
         if !self.extra_carets.is_empty() && pieces.len() == self.extra_carets.len() + 1 && !text.ends_with('\n') {
             return self.insert_piece_per_caret(&pieces);
         }
-        self.extra_carets.clear();
-        let (line, col) = self.cursor;
-        let chars: Vec<char> = self.lines[line].chars().collect();
-        let left: String = chars[..col].iter().collect();
-        let right: String = chars[col..].iter().collect();
-        let pieces: Vec<&str> = text.split('\n').collect();
+        let active = self.cursor;
+        let mut carets: Vec<(usize, usize)> = vec![active];
+        carets.extend(self.extra_carets.iter().copied());
+        carets.sort();
         let last = pieces.len() - 1;
-        let mut new_lines: Vec<String> = Vec::with_capacity(pieces.len());
-        for (i, piece) in pieces.iter().enumerate() {
-            let mut l = String::new();
-            if i == 0 {
-                l.push_str(&left);
+        let end_col = pieces[last].chars().count();
+        let mut placed = carets.clone();
+        for i in (0..carets.len()).rev() {
+            let (line, col) = carets[i];
+            let chars: Vec<char> = self.lines[line].chars().collect();
+            let at = col.min(chars.len());
+            let mut new_lines: Vec<String> = pieces.iter().map(|p| p.to_string()).collect();
+            new_lines[0].insert_str(0, &chars[..at].iter().collect::<String>());
+            new_lines[last].extend(&chars[at..]);
+            self.lines.splice(line..=line, new_lines);
+            placed[i] = (line + last, end_col);
+            for later in placed.iter_mut().skip(i + 1) {
+                later.0 += last;
             }
-            l.push_str(piece);
-            if i == last {
-                l.push_str(&right);
-            }
-            new_lines.push(l);
         }
-        self.lines.splice(line..=line, new_lines);
-        self.cursor = (line + last, pieces[last].chars().count());
+        let index = carets.iter().position(|&p| p == active).unwrap_or(0);
+        self.cursor = placed[index];
+        self.extra_carets = placed.into_iter().enumerate().filter(|(i, _)| *i != index).map(|(_, p)| p).collect();
     }
 
     pub fn insert_lines_above(&mut self, text: &str) {
@@ -1360,12 +1368,17 @@ impl Document {
         self.snapshot();
         self.selection = None;
         self.occurrences.clear();
-        self.extra_carets.clear();
-        let line = self.cursor.0;
         let new: Vec<String> = body.split('\n').map(|l| l.to_string()).collect();
         let n = new.len();
-        self.lines.splice(line..line, new);
-        self.cursor.0 = line + n;
+        let lines = self.caret_line_indexes();
+        for &line in lines.iter().rev() {
+            self.lines.splice(line..line, new.iter().cloned());
+        }
+        let shift = |l: usize| l + n * lines.iter().filter(|&&x| x <= l).count();
+        self.cursor.0 = shift(self.cursor.0);
+        for caret in &mut self.extra_carets {
+            caret.0 = shift(caret.0);
+        }
     }
 
     pub fn join_lines(&mut self) {
@@ -2039,6 +2052,32 @@ mod tests {
     }
 
     #[test]
+    fn multi_line_pastes_go_to_every_caret() {
+        let mut d = doc_with("ab\ncd");
+        d.cursor = (1, 1);
+        d.extra_carets = vec![(0, 1)];
+        d.insert_text("X\nY\nZ");
+        assert_eq!(d.lines, vec!["aX", "Y", "Zb", "cX", "Y", "Zd"]);
+        assert_eq!((d.cursor, d.extra_carets.clone()), ((5, 1), vec![(2, 1)]), "each caret lands after its paste");
+        d.undo();
+        assert_eq!(d.lines, vec!["ab", "cd"], "one undo step");
+
+        let mut d = doc_with("abc");
+        d.cursor = (0, 1);
+        d.extra_carets = vec![(0, 2)];
+        d.insert_text("X\nY\nZ");
+        assert_eq!(d.full_content(), "aX\nY\nZbX\nY\nZc", "two carets on one line");
+        assert_eq!((d.cursor, d.extra_carets.clone()), ((2, 1), vec![(4, 1)]));
+
+        let mut d = doc_with("a\nb\nc");
+        d.cursor = (2, 1);
+        d.extra_carets = vec![(0, 0)];
+        d.insert_lines_above("new\n");
+        assert_eq!(d.lines, vec!["new", "a", "b", "new", "c"], "a copied line goes above each caret's line");
+        assert_eq!((d.cursor, d.extra_carets.clone()), ((4, 1), vec![(1, 0)]));
+    }
+
+    #[test]
     fn removing_caret_lines_takes_every_caret_line_in_one_undo_step() {
         let mut d = doc_with("ls\nkeep\npwd\nmake\nend");
         d.cursor = (2, 2);
@@ -2074,6 +2113,11 @@ mod tests {
         d.undo();
         assert!(!Rc::ptr_eq(&second, &d.markdown_view().unwrap()), "undo invalidates too");
         assert!(Document::with_content("notes.txt", "# one").markdown_view().is_none());
+        let before = d.markdown_view().unwrap();
+        crate::theme::set(crate::theme::Palette { hot: ratatui::style::Color::Rgb(1, 2, 3), ..crate::theme::NEON_PALETTE });
+        let recoloured = d.markdown_view().unwrap();
+        crate::theme::set(crate::theme::NEON_PALETTE);
+        assert!(!Rc::ptr_eq(&before, &recoloured), "a theme change rebuilds the view in the new colours");
     }
 
     #[test]

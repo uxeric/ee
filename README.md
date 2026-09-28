@@ -29,7 +29,7 @@ The project is `eoe`, the command is `ee`. Type it, jack in, edit text in neon.
 - [ -- ] plugin system not found (by design)
 ```
 
-`ee` is a plain-text editor for the terminal, built for [Omarchy](https://omarchy.org) (or whatever sub-optimal unix-like system you're running) and for people with WebStorm in their fingers. It does multi-cursor editing, renders markdown live while you write it, sends lines to the agent or shell next to it in [herdr](https://herdr.dev), and animates every move with [tachyonfx](https://github.com/ratatui/tachyonfx). It keeps your terminal's own background, so Omarchy's blur shows through the neon.
+`ee` is a plain-text editor for the terminal, built for [Omarchy](https://omarchy.org) (or whatever sub-optimal unix-like system you're running) and for people with WebStorm in their fingers. It does multi-cursor editing, renders markdown live while you write it, sends lines to the agent or shell next to it in [herdr](https://herdr.dev), and animates every move with [tachyonfx](https://github.com/ratatui/tachyonfx). It takes its colours from your Omarchy theme and follows it when you switch, and keeps your terminal's own background, so Omarchy's blur shows through.
 
 <img src="assets/readme/divider.svg" width="100%" alt="">
 
@@ -87,7 +87,7 @@ Headings, emphasis, lists, checkboxes, quotes, tables, GitHub alerts, code block
 
 <p align="center"><img src="assets/readme/multicursor.svg" alt="Three carets added with Ctrl+Down type the same text on three lines at once; then Alt+Shift+E sends all three lines to Claude in the next herdr pane, and a cyan beam crosses the status bar."></p>
 
-`Ctrl+Up` and `Ctrl+Down` leave a caret behind; `Alt`+Click adds one anywhere. Typing, deleting and pasting happen at every caret, and the arrow keys move them all. `Shift+Home`, `Shift+End` and the other `Shift` moves give every caret its own selection; copy takes them all, one per line, and pasting as many lines as there are carets gives each caret its own line. `Alt+Shift+J` puts a caret on every copy of the word under the caret, so typing replaces them all at once. `Esc` goes back to one caret.
+`Ctrl+Up` and `Ctrl+Down` leave a caret behind; `Alt`+Click adds one anywhere. Typing, deleting and pasting (even several lines) happen at every caret, and the arrow keys move them all. `Shift+Home`, `Shift+End` and the other `Shift` moves give every caret its own selection; copy takes them all, one per line, and pasting as many lines as there are carets gives each caret its own line. `Alt+Shift+J` puts a caret on every copy of the word under the caret, so typing replaces them all at once. `Esc` goes back to one caret.
 
 ### Send lines to herdr
 
@@ -137,7 +137,7 @@ Terminals can't tell `Ctrl+X` from `Ctrl+Shift+X`, so WebStorm's `Ctrl+Shift+let
 | Action | Keys | Action | Keys |
 |---|---|---|---|
 | Save all | <kbd>Ctrl</kbd>+<kbd>S</kbd> | Find | <kbd>Ctrl</kbd>+<kbd>F</kbd> |
-| Undo / redo | <kbd>Ctrl</kbd>+<kbd>Z</kbd> / <kbd>Alt</kbd>+<kbd>Y</kbd> | Find in all tabs | <kbd>Shift</kbd> <kbd>Shift</kbd> |
+| Undo / redo | <kbd>Ctrl</kbd>+<kbd>Z</kbd> / <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>Z</kbd> | Find in all tabs | <kbd>Shift</kbd> <kbd>Shift</kbd> |
 | Copy / cut / paste | <kbd>Ctrl</kbd>+<kbd>C</kbd> <kbd>X</kbd> <kbd>V</kbd> | Replace | <kbd>Ctrl</kbd>+<kbd>R</kbd> |
 | Add caret below | <kbd>Ctrl</kbd>+<kbd>↓</kbd> | Next / previous tab | <kbd>Ctrl</kbd>+<kbd>]</kbd> / <kbd>Ctrl</kbd>+<kbd>[</kbd> |
 | Duplicate line | <kbd>Ctrl</kbd>+<kbd>D</kbd> | Open file | <kbd>Ctrl</kbd>+<kbd>N</kbd> |
@@ -183,9 +183,9 @@ Terminals can't tell `Ctrl+X` from `Ctrl+Shift+X`, so WebStorm's `Ctrl+Shift+let
 | Join lines | <kbd>Ctrl</kbd>+<kbd>J</kbd> | <kbd>Alt</kbd>+<kbd>J</kbd> |
 | Reformat (trim trailing whitespace, at most 2 blank lines in a row) | <kbd>Ctrl</kbd>+<kbd>K</kbd> / <kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>L</kbd> | <kbd>Alt</kbd>+<kbd>K</kbd> |
 | Undo | <kbd>Ctrl</kbd>+<kbd>Z</kbd> | <kbd>Alt</kbd>+<kbd>Z</kbd> |
-| Redo | — | <kbd>Alt</kbd>+<kbd>Y</kbd> |
+| Redo | <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>Z</kbd> | <kbd>Alt</kbd>+<kbd>Shift</kbd>+<kbd>Z</kbd> / <kbd>Alt</kbd>+<kbd>Y</kbd> |
 
-Redo has no `Ctrl` key because `Ctrl+Y` is Delete line. Plain movement clears the selection.
+`Ctrl+Y` is Delete line, as in WebStorm. Plain movement clears the selection. Long lines scroll sideways to follow the caret, and <kbd>Shift</kbd>+wheel or a sideways wheel scrolls them by hand.
 
 </details>
 
@@ -292,7 +292,7 @@ These code-editor keys are bound and show "not applicable":
 
 When the terminal supports the kitty keyboard protocol (Alacritty, kitty, Ghostty, foot and WezTerm do), `ee` turns it on. That's what makes <kbd>Ctrl</kbd>+<kbd>[</kbd> (otherwise the same key as <kbd>Esc</kbd>) and the double <kbd>Shift</kbd> tap work. <kbd>Ctrl</kbd>+<kbd>]</kbd> works in any terminal. Start with `EOE_LEGACY_KEYS=1` to use the classic key encoding instead, and try that first if typing accents with dead keys or an input method misbehaves.
 
-`Shift+Enter`, `Ctrl+Shift+W`, `Ctrl+Shift+A` and `Ctrl+Shift+Backspace` need the kitty keyboard protocol, because classic terminals send them as plain `Enter`, `Ctrl+W`, `Ctrl+A` (select all) and `Ctrl+Backspace` (delete word). Their fallbacks work everywhere: `Alt+Shift+W` shrinks the selection and `Alt+Shift+A` opens the command palette. `Ctrl+/` arrives as `Ctrl+7` in classic terminals, and both work. `Ctrl+Space` (code completion) isn't bound. `Ctrl+Enter` and `Ctrl+Shift+Enter` (send and move to a herdr pane) also need the kitty keyboard protocol.
+`Shift+Enter`, `Ctrl+Shift+W`, `Ctrl+Shift+A`, `Ctrl+Shift+Z` and `Ctrl+Shift+Backspace` need the kitty keyboard protocol, because classic terminals send them as plain `Enter`, `Ctrl+W`, `Ctrl+A` (select all), `Ctrl+Z` (undo) and `Ctrl+Backspace` (delete word). Their fallbacks work everywhere: `Alt+Shift+W` shrinks the selection, `Alt+Shift+A` opens the command palette and `Alt+Shift+Z` redoes. `Ctrl+/` arrives as `Ctrl+7` in classic terminals, and both work. `Ctrl+Space` (code completion) isn't bound. `Ctrl+Enter` and `Ctrl+Shift+Enter` (send and move to a herdr pane) also need the kitty keyboard protocol.
 
 </details>
 
@@ -306,6 +306,9 @@ When the terminal supports the kitty keyboard protocol (Alacritty, kitty, Ghostt
 # Let Alt+letter do what Ctrl+letter does. Default: true.
 alt_fallback = true
 
+# "omarchy" (the default) follows your Omarchy theme's colours; "neon" keeps ee's own palette.
+theme = "omarchy"
+
 # Give an action an extra key. The default keys keep working.
 [keys]
 save_all = "ctrl+g"
@@ -314,6 +317,8 @@ beginning_of_file = "ctrl+home"   # works in terminals with the kitty keyboard p
 ```
 
 Keys are written like `ctrl+s`, `alt+shift+f`, `shift+f6`, `f3`, `ctrl+enter` or `pageup`. The modifiers are `ctrl`, `alt` and `shift`. The named keys are `enter`, `esc`, `tab`, `backspace`, `delete`, `up`, `down`, `left`, `right`, `home`, `end`, `pageup`, `pagedown`, `space` and `f1` to `f12`.
+
+With `theme = "omarchy"`, `ee` reads the current theme's `colors.toml` (in `~/.local/state/omarchy/current/theme/`) and maps its accent, colours, foreground and background onto its own roles. Switch themes and `ee` recolours the next time you come back to it. Without Omarchy, or with `theme = "neon"`, you get the neon palette.
 
 If the file has a mistake, `ee` starts with the defaults and the status bar says what it couldn't read, for example ``config: unknown action `teleport` (using defaults)``.
 
@@ -348,7 +353,7 @@ flowchart LR
     state -- Cue --> motion[motion.rs<br>tachyonfx]
     main --> ui[ui.rs<br>render]
     ui --> md[markdown.rs<br>live preview]
-    ui --> theme[theme.rs<br>neon palette]
+    ui --> theme[theme.rs<br>palette]
     motion --> ui
 ```
 
@@ -362,7 +367,7 @@ flowchart LR
 | `src/ui.rs` | Rendering: tab bar, editor, carets and highlights, find bar, prompt, status bar |
 | `src/markdown.rs` | Markdown live preview: one rendered row per source line, with display-to-source column mapping |
 | `src/motion.rs` | Animations: editor events (`Cue`s) mapped to tachyonfx effects, plus the boot splash |
-| `src/theme.rs` | The palette and shared styles |
+| `src/theme.rs` | The palette (neon, or mapped from the Omarchy theme) and shared styles |
 | `src/find.rs` | Text matching, with or without case |
 | `src/clipboard.rs` | System clipboard through platform tools, with the OSC 52 fallback |
 | `src/herdr.rs` | Sends lines to another herdr pane over herdr's socket API |

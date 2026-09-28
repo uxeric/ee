@@ -148,6 +148,9 @@ write_config() {
 # Let Alt+letter do what Ctrl+letter does.
 alt_fallback = true
 
+# "omarchy" follows your Omarchy theme's colours; "neon" keeps ee's own palette.
+theme = "omarchy"
+
 # Give an action an extra key. The default keys keep working.
 [keys]
 # save_all = "ctrl+g"

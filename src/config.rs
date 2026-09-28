@@ -25,6 +25,7 @@ impl KeyBinding {
 
 pub struct Config {
     pub fallback_enabled: bool,
+    pub follow_omarchy_theme: bool,
     pub remaps: HashMap<Action, KeyBinding>,
 }
 
@@ -32,6 +33,7 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             fallback_enabled: true,
+            follow_omarchy_theme: true,
             remaps: HashMap::new(),
         }
     }
@@ -74,7 +76,11 @@ pub fn parse(text: &str) -> Result<Config, String> {
                     config.remaps.insert(action, parse_key(spec)?);
                 }
             }
+            ("theme", toml::Value::String(name)) if name == "omarchy" || name == "neon" => {
+                config.follow_omarchy_theme = name == "omarchy"
+            }
             ("alt_fallback", _) => return Err("`alt_fallback` must be true or false".to_string()),
+            ("theme", _) => return Err("`theme` must be \"omarchy\" or \"neon\"".to_string()),
             _ => return Err(format!("unknown setting `{}`", key)),
         }
     }
@@ -172,7 +178,8 @@ mod tests {
             ("[keys]\nfind = \"hyper+f\"", "cannot read key `hyper+f`"),
             ("[keys]\nfind = 3", "`find` needs a key"),
             ("alt_fallback = \"yes\"", "must be true or false"),
-            ("theme = \"neon\"", "unknown setting `theme`"),
+            ("theme = \"blue\"", "`theme` must be \"omarchy\" or \"neon\""),
+            ("colour = \"neon\"", "unknown setting `colour`"),
             ("alt_fallback = ", ""),
         ];
         for (text, expected) in cases {
@@ -196,7 +203,8 @@ mod tests {
         let start = script.find("<< 'EOF'\n").expect("installer config heredoc") + "<< 'EOF'\n".len();
         let end = start + script[start..].find("\nEOF\n").expect("heredoc end");
         let config = parse(&script[start..end]).unwrap();
-        assert!(config.fallback_enabled && config.remaps.is_empty());
+        assert!(config.fallback_enabled && config.follow_omarchy_theme && config.remaps.is_empty());
+        assert!(!parse("theme = \"neon\"").unwrap().follow_omarchy_theme);
     }
 
     #[test]

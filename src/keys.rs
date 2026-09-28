@@ -307,6 +307,7 @@ impl Keymap {
             'x' => Some(Action::Cut),
             'y' => Some(Action::DeleteLine),
             'z' => Some(Action::Undo),
+            'Z' => Some(Action::Redo),
             '[' => Some(Action::PreviousTab),
             ']' | '5' => Some(Action::NextTab),
             _ => None,
@@ -361,7 +362,8 @@ impl Keymap {
                 } else if ctrl && c == '7' {
                     Some(Action::ToggleComment)
                 } else if ctrl {
-                    Keymap::ctrl_char_action(c)
+                    let c = if shift { c.to_ascii_uppercase() } else { c };
+                    Keymap::ctrl_char_action(c).or_else(|| Keymap::ctrl_char_action(c.to_ascii_lowercase()))
                 } else if alt && c == 'A' {
                     Some(Action::FindAction)
                 } else if alt && c == 'F' {
@@ -734,6 +736,11 @@ mod tests {
             (event(KeyCode::End, true, false, true), Action::SelectFileEnd),
             (event(KeyCode::Enter, false, false, true), Action::StartNewLine),
             (event(KeyCode::Char('W'), true, false, true), Action::ShrinkSelection),
+            (event(KeyCode::Char('w'), true, false, true), Action::ShrinkSelection),
+            (event(KeyCode::Char('Z'), true, false, false), Action::Redo),
+            (event(KeyCode::Char('z'), true, false, true), Action::Redo),
+            (event(KeyCode::Char('Z'), false, true, true), Action::Redo),
+            (event(KeyCode::Char('s'), true, false, true), Action::SaveAll),
             (event(KeyCode::Char('W'), false, true, true), Action::ShrinkSelection),
             (event(KeyCode::Tab, false, false, false), Action::Indent),
             (event(KeyCode::BackTab, false, false, true), Action::Unindent),

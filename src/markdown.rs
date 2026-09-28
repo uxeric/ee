@@ -3,7 +3,7 @@ use std::ops::Range;
 use pulldown_cmark::{Alignment, BlockQuoteKind, CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 use ratatui::style::{Color, Modifier, Style};
 
-use crate::theme::{AMBER, CODE_BG, GHOST, HOT, ICE, KEYCAP, NEON, TABLE_HEAD, TABLE_STRIPE, TEXT, VIOLET, VOID};
+use crate::theme::pal;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Seg {
@@ -59,10 +59,10 @@ pub struct MdView {
 fn heading_style(level: u8) -> Style {
     let s = Style::default().add_modifier(Modifier::BOLD);
     match level {
-        1 => s.fg(HOT).add_modifier(Modifier::UNDERLINED),
-        2 => s.fg(AMBER),
-        3 => s.fg(ICE),
-        _ => s.fg(TEXT),
+        1 => s.fg(pal().hot).add_modifier(Modifier::UNDERLINED),
+        2 => s.fg(pal().amber),
+        3 => s.fg(pal().ice),
+        _ => s.fg(pal().text),
     }
 }
 
@@ -70,13 +70,10 @@ fn level_num(l: HeadingLevel) -> u8 {
     l as u8
 }
 
-const ALERTS: [(&str, &str, Color); 5] = [
-    ("●", "Note", ICE),
-    ("◆", "Tip", NEON),
-    ("◉", "Important", VIOLET),
-    ("▲", "Warning", AMBER),
-    ("⊘", "Caution", HOT),
-];
+fn alerts() -> [(&'static str, &'static str, Color); 5] {
+    let p = pal();
+    [("●", "Note", p.ice), ("◆", "Tip", p.neon), ("◉", "Important", p.violet), ("▲", "Warning", p.amber), ("⊘", "Caution", p.hot)]
+}
 
 fn alert_index(kind: BlockQuoteKind) -> usize {
     match kind {
@@ -191,7 +188,7 @@ fn on(bg: Color) -> Style {
         return Style::default().bg(bg);
     };
     let light = 0.299 * r as f32 + 0.587 * g as f32 + 0.114 * b as f32 > 150.0;
-    Style::default().bg(bg).fg(if light { VOID } else { TEXT }).add_modifier(Modifier::BOLD)
+    Style::default().bg(bg).fg(if light { pal().void } else { pal().text }).add_modifier(Modifier::BOLD)
 }
 
 fn shields_badge(src: &str) -> Option<(String, Color, String, Color)> {
@@ -253,7 +250,7 @@ fn highlight(line: &str, lang: &str) -> Vec<Seg> {
     let chars: Vec<char> = line.chars().collect();
     let n = chars.len();
     let lang = lang.to_ascii_lowercase();
-    let text = Style::default().fg(TEXT);
+    let text = Style::default().fg(pal().text);
     let seg = |a: usize, b: usize, style: Style| Seg {
         text: chars[a..b].iter().collect(),
         style,
@@ -266,15 +263,15 @@ fn highlight(line: &str, lang: &str) -> Vec<Seg> {
     }
     if lang == "diff" || lang == "patch" {
         let style = match chars[0] {
-            '+' => Style::default().fg(ICE),
-            '-' => Style::default().fg(HOT),
-            '@' => Style::default().fg(AMBER),
+            '+' => Style::default().fg(pal().ice),
+            '-' => Style::default().fg(pal().hot),
+            '@' => Style::default().fg(pal().amber),
             _ => text,
         };
         return vec![seg(0, n, style)];
     }
     if lang == "toml" && line.trim_start().starts_with('[') {
-        return vec![seg(0, n, Style::default().fg(ICE).add_modifier(Modifier::BOLD))];
+        return vec![seg(0, n, Style::default().fg(pal().ice).add_modifier(Modifier::BOLD))];
     }
     let hash = HASH_COMMENTS.contains(&lang.as_str());
     let slash = SLASH_COMMENTS.contains(&lang.as_str());
@@ -283,7 +280,7 @@ fn highlight(line: &str, lang: &str) -> Vec<Seg> {
     let mut out = Vec::new();
     let mut i = 0;
     if lang == "console" && line.starts_with("$ ") {
-        out.push(seg(0, 1, Style::default().fg(HOT)));
+        out.push(seg(0, 1, Style::default().fg(pal().hot)));
         i = 1;
     }
     while i < n {
@@ -291,7 +288,7 @@ fn highlight(line: &str, lang: &str) -> Vec<Seg> {
         let comment = (hash && c == '#' && (i == 0 || chars[i - 1].is_whitespace()))
             || (slash && c == '/' && chars.get(i + 1) == Some(&'/'));
         if comment {
-            out.push(seg(i, n, Style::default().fg(GHOST).add_modifier(Modifier::ITALIC)));
+            out.push(seg(i, n, Style::default().fg(pal().ghost).add_modifier(Modifier::ITALIC)));
             break;
         }
         if c == '"' || c == '`' || (c == '\'' && lang != "rust" && lang != "rs") {
@@ -300,7 +297,7 @@ fn highlight(line: &str, lang: &str) -> Vec<Seg> {
                 j += if chars[j] == '\\' { 2 } else { 1 };
             }
             let end = (j + 1).min(n);
-            out.push(seg(i, end, Style::default().fg(AMBER)));
+            out.push(seg(i, end, Style::default().fg(pal().amber)));
             i = end;
             continue;
         }
@@ -309,7 +306,7 @@ fn highlight(line: &str, lang: &str) -> Vec<Seg> {
             while j < n && (chars[j].is_ascii_alphanumeric() || chars[j] == '.' || chars[j] == '_') {
                 j += 1;
             }
-            out.push(seg(i, j, Style::default().fg(HOT)));
+            out.push(seg(i, j, Style::default().fg(pal().hot)));
             i = j;
             continue;
         }
@@ -319,7 +316,7 @@ fn highlight(line: &str, lang: &str) -> Vec<Seg> {
                 j += 1;
             }
             let word: String = chars[i..j].iter().collect();
-            let style = if words.contains(&word.as_str()) { Style::default().fg(ICE) } else { text };
+            let style = if words.contains(&word.as_str()) { Style::default().fg(pal().ice) } else { text };
             out.push(seg(i, j, style));
             i = j;
             continue;
@@ -345,7 +342,7 @@ pub fn build(lines: &[String]) -> MdView {
     let mut pieces: Vec<Vec<Piece>> = vec![Vec::new(); lines.len()];
     let mut quote_lines = vec![false; lines.len()];
 
-    let mut style_stack: Vec<Style> = vec![Style::default().fg(TEXT)];
+    let mut style_stack: Vec<Style> = vec![Style::default().fg(pal().text)];
     let mut list_stack: Vec<Option<u64>> = Vec::new();
     let mut pending_bullet: Option<(usize, usize)> = None;
     let mut tables: Vec<Table> = Vec::new();
@@ -404,12 +401,12 @@ pub fn build(lines: &[String]) -> MdView {
                     }
                     Tag::Emphasis => top.add_modifier(Modifier::ITALIC),
                     Tag::Strong => top.add_modifier(Modifier::BOLD),
-                    Tag::Strikethrough => top.add_modifier(Modifier::CROSSED_OUT).fg(GHOST),
+                    Tag::Strikethrough => top.add_modifier(Modifier::CROSSED_OUT).fg(pal().ghost),
                     Tag::Link { dest_url, .. } => {
                         links.push(dest_url.to_string());
-                        top.fg(ICE).add_modifier(Modifier::UNDERLINED)
+                        top.fg(pal().ice).add_modifier(Modifier::UNDERLINED)
                     }
-                    Tag::Image { .. } => top.fg(AMBER).add_modifier(Modifier::ITALIC),
+                    Tag::Image { .. } => top.fg(pal().amber).add_modifier(Modifier::ITALIC),
                     Tag::BlockQuote(kind) => {
                         let (a, z) = (line_of(r.start), line_of(r.end.saturating_sub(1)));
                         let alert = kind.map(alert_index);
@@ -422,9 +419,9 @@ pub fn build(lines: &[String]) -> MdView {
                         match alert {
                             Some(i) => {
                                 kinds[a] = LineKind::AlertTitle(i);
-                                top.fg(TEXT)
+                                top.fg(pal().text)
                             }
-                            None => top.fg(GHOST).add_modifier(Modifier::ITALIC),
+                            None => top.fg(pal().ghost).add_modifier(Modifier::ITALIC),
                         }
                     }
                     Tag::CodeBlock(kind) => {
@@ -444,7 +441,7 @@ pub fn build(lines: &[String]) -> MdView {
                                 kinds[z] = LineKind::FenceClose;
                             }
                         }
-                        Style::default().fg(TEXT)
+                        Style::default().fg(pal().text)
                     }
                     Tag::List(start) => {
                         list_stack.push(*start);
@@ -458,10 +455,10 @@ pub fn build(lines: &[String]) -> MdView {
                         let ws = line[col + mk_len..].len() - line[col + mk_len..].trim_start().len();
                         let depth = list_stack.len();
                         let (glyph, st) = match list_stack.last().copied().flatten() {
-                            Some(_) => (format!("{} ", &line[col..col + mk_len]), Style::default().fg(AMBER)),
+                            Some(_) => (format!("{} ", &line[col..col + mk_len]), Style::default().fg(pal().amber)),
                             None => (
                                 format!("{} ", ["•", "◦", "▪"][(depth - 1) % 3]),
-                                Style::default().fg(HOT),
+                                Style::default().fg(pal().hot),
                             ),
                         };
                         push(&mut pieces, r.start..r.start + mk_len + ws.min(1), Some(&glyph), st, true, None);
@@ -488,7 +485,7 @@ pub fn build(lines: &[String]) -> MdView {
                             t.rows.push(li);
                         }
                         if matches!(tag, Tag::TableHead) {
-                            top.add_modifier(Modifier::BOLD).fg(ICE)
+                            top.add_modifier(Modifier::BOLD).fg(pal().ice)
                         } else {
                             top
                         }
@@ -522,9 +519,9 @@ pub fn build(lines: &[String]) -> MdView {
                     pieces[li][pi].verbatim = false;
                 }
                 let (g, st) = if done {
-                    ("✓", Style::default().fg(GHOST))
+                    ("✓", Style::default().fg(pal().ghost))
                 } else {
-                    ("□", Style::default().fg(AMBER))
+                    ("□", Style::default().fg(pal().amber))
                 };
                 push(&mut pieces, r, Some(g), st, true, None);
             }
@@ -537,7 +534,7 @@ pub fn build(lines: &[String]) -> MdView {
                 if is.len() >= 2 && is.starts_with([' ', '\n']) && is.ends_with([' ', '\n']) && !is.trim().is_empty() {
                     inner = inner.start + 1..inner.end - 1;
                 }
-                push(&mut pieces, inner, None, top.fg(AMBER).bg(CODE_BG), false, links.last());
+                push(&mut pieces, inner, None, top.fg(pal().amber).bg(pal().code_bg), false, links.last());
             }
             Event::Html(_) | Event::InlineHtml(_) => {
                 for frag in html_frags(&src, r.clone()) {
@@ -567,30 +564,30 @@ pub fn build(lines: &[String]) -> MdView {
                             let overlay = match name.as_str() {
                                 "b" | "strong" => Some(Style::default().add_modifier(Modifier::BOLD)),
                                 "i" | "em" => Some(Style::default().add_modifier(Modifier::ITALIC)),
-                                "code" | "tt" => Some(Style::default().fg(AMBER).bg(CODE_BG)),
-                                "sub" | "sup" | "small" => Some(Style::default().fg(GHOST)),
+                                "code" | "tt" => Some(Style::default().fg(pal().amber).bg(pal().code_bg)),
+                                "sub" | "sup" | "small" => Some(Style::default().fg(pal().ghost)),
                                 "s" | "del" | "strike" => Some(Style::default().add_modifier(Modifier::CROSSED_OUT)),
                                 "u" | "ins" => Some(Style::default().add_modifier(Modifier::UNDERLINED)),
                                 _ => None,
                             };
                             match (name.as_str(), closing) {
                                 ("kbd", false) => {
-                                    push(&mut pieces, range, Some("▐"), Style::default().fg(KEYCAP), false, links.last());
-                                    html.push((name, Style::default().bg(KEYCAP).fg(TEXT)));
+                                    push(&mut pieces, range, Some("▐"), Style::default().fg(pal().keycap), false, links.last());
+                                    html.push((name, Style::default().bg(pal().keycap).fg(pal().text)));
                                 }
                                 ("kbd", true) => {
                                     pop(&mut html, "kbd");
-                                    push(&mut pieces, range, Some("▌"), Style::default().fg(KEYCAP), false, links.last());
+                                    push(&mut pieces, range, Some("▌"), Style::default().fg(pal().keycap), false, links.last());
                                 }
                                 ("summary", false) => {
-                                    let st = Style::default().fg(ICE).add_modifier(Modifier::BOLD);
+                                    let st = Style::default().fg(pal().ice).add_modifier(Modifier::BOLD);
                                     push(&mut pieces, range, Some("▸ "), st, false, None);
                                     html.push((name, st));
                                 }
                                 ("a", false) => {
                                     hide(&mut pieces, range);
                                     links.push(attr(&attrs, "href").unwrap_or_default());
-                                    html.push((name, Style::default().fg(ICE).add_modifier(Modifier::UNDERLINED)));
+                                    html.push((name, Style::default().fg(pal().ice).add_modifier(Modifier::UNDERLINED)));
                                 }
                                 ("a", true) => {
                                     hide(&mut pieces, range);
@@ -618,7 +615,7 @@ pub fn build(lines: &[String]) -> MdView {
                                         if alt.chars().count() > 48 {
                                             shown.push('…');
                                         }
-                                        let st = Style::default().fg(GHOST).add_modifier(Modifier::ITALIC);
+                                        let st = Style::default().fg(pal().ghost).add_modifier(Modifier::ITALIC);
                                         let shown = format!("◩ {}", shown);
                                         push(&mut pieces, range, Some(&shown), st, false, links.last());
                                     }
@@ -692,8 +689,8 @@ pub fn build(lines: &[String]) -> MdView {
         }
         for (ri, (&li, row)) in table.rows.iter().zip(contents).enumerate() {
             let band = match ri {
-                0 => Some(TABLE_HEAD),
-                _ if ri % 2 == 0 => Some(TABLE_STRIPE),
+                0 => Some(pal().table_head),
+                _ if ri % 2 == 0 => Some(pal().table_stripe),
                 _ => None,
             };
             rendered[li] = Some(table_row(&lines[li], &cells[li], row, &widths, &aligns, band));
@@ -733,7 +730,7 @@ pub fn build(lines: &[String]) -> MdView {
 fn compose(line: &str, kind: LineKind, ps: Vec<Piece>, in_quote: bool, alert: Option<usize>, lang: Option<&str>) -> RenderedLine {
     let cc = |b: usize| line[..b].chars().count();
     let n = line.chars().count();
-    let dim = Style::default().fg(GHOST);
+    let dim = Style::default().fg(pal().ghost);
     let whole = |text: String, style: Style| Seg { text, style, src: 0..n, verbatim: false, link: None };
     let mut rl = RenderedLine::default();
     match &kind {
@@ -754,12 +751,12 @@ fn compose(line: &str, kind: LineKind, ps: Vec<Piece>, in_quote: bool, alert: Op
             return rl;
         }
         LineKind::Code => {
-            rl.bg = Some(CODE_BG);
+            rl.bg = Some(pal().code_bg);
             rl.segs = highlight(line, lang.unwrap_or(""));
             return rl;
         }
         LineKind::AlertTitle(i) => {
-            let (glyph, label, color) = ALERTS[*i];
+            let (glyph, label, color) = alerts()[*i];
             let st = Style::default().fg(color).add_modifier(Modifier::BOLD);
             rl.segs.push(whole(format!("▌ {} {}", glyph, label), st));
             return rl;
@@ -778,7 +775,7 @@ fn compose(line: &str, kind: LineKind, ps: Vec<Piece>, in_quote: bool, alert: Op
             let b = from + off;
             let col = cc(b);
             let (t, st) = match c {
-                '>' if leading && in_quote => ("▌", Style::default().fg(alert.map_or(HOT, |i| ALERTS[i].2))),
+                '>' if leading && in_quote => ("▌", Style::default().fg(alert.map_or(pal().hot, |i| alerts()[i].2))),
                 c if c.is_whitespace() && leading && !heading => (" ", Style::default()),
                 _ => ("", Style::default()),
             };
@@ -843,7 +840,7 @@ fn table_row(
         Some(bg) => Style::default().bg(bg),
         None => Style::default(),
     };
-    let border = base.fg(GHOST);
+    let border = base.fg(pal().ghost);
     let filler = |text: String, col: usize| Seg { text, style: base, src: col..col + 1, verbatim: false, link: None };
     let first = cells.first().map_or(0, |c| c.0);
     let lead = if first > 0 && line.as_bytes()[first - 1] == b'|' { first - 1 } else { first };
@@ -875,7 +872,7 @@ fn table_row(
 fn table_rule(widths: &[usize], line_len: usize) -> RenderedLine {
     let bars: Vec<String> = widths.iter().map(|w| "═".repeat(w + 2)).collect();
     let text = format!("╞{}╡", bars.join("╪"));
-    let style = Style::default().fg(ICE);
+    let style = Style::default().fg(pal().ice);
     RenderedLine {
         segs: vec![Seg { text, style, src: 0..line_len, verbatim: false, link: None }],
         ..Default::default()
@@ -997,12 +994,12 @@ mod tests {
     fn text_is_coloured_by_what_it_is() {
         let code = "```sh\necho \"hi\" # note\n```\n```diff\n+ add\n- drop\n```";
         let cases = [
-            ("> [!TIP]\n> go", 1, '▌', NEON, "tip bar"),
-            (code, 1, 'e', TEXT, "command"),
-            (code, 1, 'i', AMBER, "string"),
-            (code, 1, 'n', GHOST, "comment"),
-            (code, 4, 'a', ICE, "diff addition"),
-            (code, 5, 'd', HOT, "diff removal"),
+            ("> [!TIP]\n> go", 1, '▌', pal().neon, "tip bar"),
+            (code, 1, 'e', pal().text, "command"),
+            (code, 1, 'i', pal().amber, "string"),
+            (code, 1, 'n', pal().ghost, "comment"),
+            (code, 4, 'a', pal().ice, "diff addition"),
+            (code, 5, 'd', pal().hot, "diff removal"),
         ];
         for (source, row, ch, colour, what) in cases {
             let fg = view(source).lines[row].cells().into_iter().find(|c| c.0 == ch).unwrap().1.fg;

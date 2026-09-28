@@ -64,35 +64,35 @@ impl Motion {
         match cue {
             Cue::TabNext | Cue::TabPrev => {
                 let dir = if cue == Cue::TabNext { Dir::RightToLeft } else { Dir::LeftToRight };
-                let sweep = fx::fade_from_fg(theme::HOT, (320, Interpolation::QuadOut))
+                let sweep = fx::fade_from_fg(theme::pal().hot, (320, Interpolation::QuadOut))
                     .with_pattern(SweepPattern::new(dir, 16));
                 self.add(Slot::Editor, sweep.with_area(editor));
             }
             Cue::Opened => {
                 let decode = fx::parallel(&[
                     fx::coalesce((380, Interpolation::QuadOut)),
-                    fx::fade_from_fg(theme::ICE, (520, Interpolation::QuadOut)),
+                    fx::fade_from_fg(theme::pal().ice, (520, Interpolation::QuadOut)),
                 ]);
                 self.add(Slot::Editor, decode.with_area(editor));
             }
             Cue::FindOpened => {
                 if let Some(bar) = areas.bar {
-                    let sweep = fx::sweep_in(Dir::LeftToRight, 10, 0, theme::VOID, (200, Interpolation::QuadOut));
+                    let sweep = fx::sweep_in(Dir::LeftToRight, 10, 0, theme::pal().void, (200, Interpolation::QuadOut));
                     self.add(Slot::Bar, sweep.with_area(bar));
                 }
             }
             Cue::Matched => {
                 if let Some(sel) = areas.selection {
-                    let glow = fx::fade_from(theme::VOID, theme::HOT, (420, Interpolation::QuadOut));
+                    let glow = fx::fade_from(theme::pal().void, theme::pal().hot, (420, Interpolation::QuadOut));
                     self.add(Slot::Match, glow.with_area(sel));
                 }
             }
             Cue::Saved | Cue::Moved => {
-                let beam = fx::sweep_in(Dir::LeftToRight, 24, 0, theme::ICE, (480, Interpolation::QuadOut));
+                let beam = fx::sweep_in(Dir::LeftToRight, 24, 0, theme::pal().ice, (480, Interpolation::QuadOut));
                 self.add(Slot::Status, beam.with_area(areas.status));
             }
             Cue::Sent => {
-                let beam = fx::sweep_in(Dir::LeftToRight, 24, 0, theme::ICE, (480, Interpolation::QuadOut));
+                let beam = fx::sweep_in(Dir::LeftToRight, 24, 0, theme::pal().ice, (480, Interpolation::QuadOut));
                 self.add(Slot::Status, beam.with_area(areas.status));
                 if !areas.caret_rows.is_empty() {
                     let packets: Vec<Effect> = areas.caret_rows.iter().map(|&row| transmit().with_area(row)).collect();
@@ -103,7 +103,7 @@ impl Motion {
                 if let Some(modal) = areas.modal {
                     let open = fx::parallel(&[
                         fx::coalesce((520, Interpolation::QuadOut)),
-                        fx::sweep_in(Dir::UpToDown, 6, 3, theme::ICE, (620, Interpolation::QuadOut)),
+                        fx::sweep_in(Dir::UpToDown, 6, 3, theme::pal().ice, (620, Interpolation::QuadOut)),
                     ]);
                     self.add(Slot::Modal, open.with_area(modal));
                 }
@@ -112,13 +112,13 @@ impl Motion {
                 if let Some(popup) = areas.popup {
                     let open = fx::parallel(&[
                         fx::coalesce((220, Interpolation::QuadOut)),
-                        fx::fade_from_fg(theme::ICE, (320, Interpolation::QuadOut)),
+                        fx::fade_from_fg(theme::pal().ice, (320, Interpolation::QuadOut)),
                     ]);
                     self.add(Slot::Popup, open.with_area(popup));
                 }
             }
             Cue::Warn => {
-                let flash = fx::fade_from_fg(theme::AMBER, (600, Interpolation::QuadOut));
+                let flash = fx::fade_from_fg(theme::pal().amber, (600, Interpolation::QuadOut));
                 self.add(Slot::Status, flash.with_area(areas.status));
             }
             Cue::Error => {
@@ -130,14 +130,14 @@ impl Motion {
                     .into_effect();
                 let fail = fx::parallel(&[
                     fx::with_duration(Duration::from_millis(380), glitch),
-                    fx::fade_from_fg(theme::ERROR, (600, Interpolation::QuadOut)),
+                    fx::fade_from_fg(theme::pal().error, (600, Interpolation::QuadOut)),
                 ]);
                 self.add(Slot::Status, fail.with_area(areas.status));
             }
             Cue::Quit => {
                 let fade = fx::parallel(&[
                     fx::dissolve((300, Interpolation::QuadIn)),
-                    fx::fade_to_fg(theme::VOID, (300, Interpolation::QuadIn)),
+                    fx::fade_to_fg(theme::pal().void, (300, Interpolation::QuadIn)),
                 ]);
                 self.add(Slot::Screen, fade.with_area(areas.screen));
             }
@@ -150,7 +150,7 @@ impl Motion {
         }
         let jack_in = fx::parallel(&[
             fx::coalesce((360, Interpolation::QuadOut)),
-            fx::sweep_in(Dir::UpToDown, 8, 4, theme::ICE, (480, Interpolation::QuadOut)),
+            fx::sweep_in(Dir::UpToDown, 8, 4, theme::pal().ice, (480, Interpolation::QuadOut)),
         ]);
         self.add(Slot::Screen, jack_in.with_area(areas.screen));
     }
@@ -200,20 +200,20 @@ fn transmit() -> Effect {
                 }
                 let Some(cell) = buf.cell_mut((x, y)) else { continue };
                 if behind < 1.0 {
-                    cell.set_fg(theme::VOID).set_bg(theme::HOT);
+                    cell.set_fg(theme::pal().void).set_bg(theme::pal().hot);
                 } else if behind < TRAIL {
                     if cell.symbol() != " " {
                         let i = (((behind - 1.0) / (TRAIL - 1.0)) * BLOCKS.len() as f32) as usize;
                         cell.set_symbol(BLOCKS[i.min(BLOCKS.len() - 1)]);
                     }
-                    cell.set_fg(theme::ICE);
+                    cell.set_fg(theme::pal().ice);
                 } else {
                     let settled = ((behind - TRAIL) / SETTLE).min(1.0);
                     let target = match cell.fg {
                         ratatui::style::Color::Rgb(..) => cell.fg,
-                        _ => theme::TEXT,
+                        _ => theme::pal().text,
                     };
-                    cell.set_fg(mix(theme::ICE, target, settled));
+                    cell.set_fg(mix(theme::pal().ice, target, settled));
                 }
             }
         }
@@ -279,8 +279,8 @@ mod tests {
     fn sending_lines_leaves_the_text_exactly_as_it_found_it() {
         let a = areas();
         let mut base = Buffer::empty(a.screen);
-        base.set_string(2, 2, "echo one && sleep 10", ratatui::style::Style::default().fg(theme::TEXT));
-        base.set_string(2, 3, "echo two", ratatui::style::Style::default().fg(theme::TEXT));
+        base.set_string(2, 2, "echo one && sleep 10", ratatui::style::Style::default().fg(theme::pal().text));
+        base.set_string(2, 3, "echo two", ratatui::style::Style::default().fg(theme::pal().text));
         let mut m = Motion::new(true);
         m.cue(Cue::Sent, &a);
         let mut frame = base.clone();

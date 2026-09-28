@@ -17,7 +17,7 @@ use std::time::{Duration, Instant};
 
 use ratatui::crossterm::event::{
     poll, read, DisableBracketedPaste, KeyboardEnhancementFlags, PopKeyboardEnhancementFlags,
-    PushKeyboardEnhancementFlags, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture, Event, KeyEventKind, KeyModifiers, MouseButton,
+    PushKeyboardEnhancementFlags, DisableFocusChange, DisableMouseCapture, EnableBracketedPaste, EnableFocusChange, EnableMouseCapture, Event, KeyEventKind, KeyModifiers, MouseButton,
     MouseEventKind,
 };
 use ratatui::crossterm::execute;
@@ -86,7 +86,7 @@ fn main() -> std::io::Result<()> {
     let backend = CrosstermBackend::new(stdout());
     let mut terminal = Terminal::new(backend)?;
 
-    execute!(stdout(), EnterAlternateScreen, EnableMouseCapture, EnableBracketedPaste)?;
+    execute!(stdout(), EnterAlternateScreen, EnableMouseCapture, EnableBracketedPaste, EnableFocusChange)?;
     enable_raw_mode()?;
     let enhanced =
         env::var_os("EOE_LEGACY_KEYS").is_none() && supports_keyboard_enhancement().unwrap_or(false);
@@ -108,7 +108,7 @@ fn main() -> std::io::Result<()> {
         execute!(stdout(), PopKeyboardEnhancementFlags)?;
     }
     disable_raw_mode()?;
-    execute!(stdout(), DisableBracketedPaste, DisableMouseCapture, LeaveAlternateScreen)?;
+    execute!(stdout(), DisableFocusChange, DisableBracketedPaste, DisableMouseCapture, LeaveAlternateScreen)?;
     result?;
     if state.restart_for_update {
         let (message, code) = update::install_and_restart(&args[1..]);
@@ -125,6 +125,8 @@ fn screen(terminal: &Terminal<CrosstermBackend<Stdout>>) -> std::io::Result<Rect
 
 fn run(terminal: &mut Terminal<CrosstermBackend<Stdout>>, state: &mut EditorState) -> std::io::Result<()> {
     let (config, warning) = config::load();
+    let mut omarchy = theme::OmarchyTheme::new(config.follow_omarchy_theme);
+    omarchy.refresh();
     let keymap = Keymap::new(config);
     if let Some(warning) = warning {
         state.warn(warning);
@@ -138,6 +140,9 @@ fn run(terminal: &mut Terminal<CrosstermBackend<Stdout>>, state: &mut EditorStat
 
     loop {
         let area = screen(terminal)?;
+        if !motion.is_animating() {
+            omarchy.refresh();
+        }
         if let Some(rx) = &update_check {
             match rx.try_recv() {
                 Ok((from, to)) => {
@@ -249,7 +254,15 @@ fn run(terminal: &mut Terminal<CrosstermBackend<Stdout>>, state: &mut EditorStat
             }
             Event::Mouse(mouse) if matches!(mouse.kind, MouseEventKind::ScrollUp | MouseEventKind::ScrollDown) => {
                 let lines = if mouse.kind == MouseEventKind::ScrollUp { -3 } else { 3 };
-                ui::scroll_view(area, state, lines);
+                if mouse.modifiers.contains(KeyModifiers::SHIFT) {
+                    ui::scroll_sideways(area, state, lines * 2);
+                } else {
+                    ui::scroll_view(area, state, lines);
+                }
+                true
+            }
+            Event::Mouse(mouse) if matches!(mouse.kind, MouseEventKind::ScrollLeft | MouseEventKind::ScrollRight) => {
+                ui::scroll_sideways(area, state, if mouse.kind == MouseEventKind::ScrollLeft { -6 } else { 6 });
                 true
             }
             Event::Paste(text) => {

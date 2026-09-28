@@ -727,7 +727,7 @@ impl EditorState {
             return;
         }
         let doc = self.active_doc();
-        if whole_line && !doc.has_selection() && doc.extra_carets.is_empty() {
+        if whole_line && !doc.has_selection() {
             doc.insert_lines_above(&text);
         } else {
             doc.insert_text(&text);

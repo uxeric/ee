@@ -61,9 +61,9 @@ fn render_picker(frame: &mut Frame, state: &EditorState, area: Rect) {
     };
     let block = Block::bordered()
         .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(theme::ICE))
-        .title(Span::styled(title, Style::default().fg(theme::HOT).add_modifier(Modifier::BOLD)))
-        .style(Style::default().bg(theme::VOID));
+        .border_style(Style::default().fg(theme::pal().ice))
+        .title(Span::styled(title, Style::default().fg(theme::pal().hot).add_modifier(Modifier::BOLD)))
+        .style(Style::default().bg(theme::pal().void));
     let inner = block.inner(rect);
     frame.render_widget(Clear, rect);
     frame.render_widget(block, rect);
@@ -71,7 +71,7 @@ fn render_picker(frame: &mut Frame, state: &EditorState, area: Rect) {
         return;
     }
     let input = Line::from(vec![
-        Span::styled("▸ ", Style::default().fg(theme::HOT)),
+        Span::styled("▸ ", Style::default().fg(theme::pal().hot)),
         Span::styled(picker.input.clone(), theme::text()),
         Span::styled(" ", theme::caret()),
     ]);
@@ -94,13 +94,13 @@ fn render_picker(frame: &mut Frame, state: &EditorState, area: Rect) {
         let y = inner.y + 1 + (row - start) as u16;
         let selected = row == picker.selected;
         let item = picker.item(*index);
-        let base = if selected { Style::default().bg(theme::SELECTION) } else { Style::default() };
-        let mut spans = vec![Span::styled(if selected { "▌ " } else { "  " }, base.fg(theme::HOT))];
+        let base = if selected { Style::default().bg(theme::pal().selection) } else { Style::default() };
+        let mut spans = vec![Span::styled(if selected { "▌ " } else { "  " }, base.fg(theme::pal().hot))];
         for (i, c) in item.label.chars().enumerate() {
             let style = if hits.contains(&i) {
-                base.fg(theme::HOT).add_modifier(Modifier::BOLD)
+                base.fg(theme::pal().hot).add_modifier(Modifier::BOLD)
             } else {
-                base.fg(theme::TEXT)
+                base.fg(theme::pal().text)
             };
             spans.push(Span::styled(c.to_string(), style));
         }
@@ -111,7 +111,7 @@ fn render_picker(frame: &mut Frame, state: &EditorState, area: Rect) {
         let used = Line::from(spans.clone()).width() as u16;
         frame.render_widget(Paragraph::new(Line::from(spans)), row_rect);
         if !item.detail.is_empty() {
-            render_right(frame, row_rect, used, &format!("{} ", item.detail), base.fg(theme::GHOST));
+            render_right(frame, row_rect, used, &format!("{} ", item.detail), base.fg(theme::pal().ghost));
         }
     }
 }
@@ -119,24 +119,17 @@ fn render_picker(frame: &mut Frame, state: &EditorState, area: Rect) {
 pub fn areas(area: Rect, state: &EditorState) -> Areas {
     let (_, editor, bar, status) = layout(area, state.mode);
     let doc = &state.tabs[state.active];
-    let selection = doc.selection.and_then(|((sl, sc), (el, ec))| {
-        let height = editor.height as usize;
-        let top = visible_top(doc, height);
-        if sl != el || sl < top || sl >= top + height {
-            return None;
-        }
-        let gutter = doc.lines.len().to_string().len() + 1;
-        let x = editor.x as usize + gutter + sc;
-        let right = (editor.x + editor.width) as usize;
-        if x >= right {
-            return None;
-        }
-        let width = (ec - sc).min(right - x);
-        Some(Rect::new(x as u16, editor.y + (sl - top) as u16, width as u16, 1))
-    });
     let height = editor.height as usize;
-    let top = visible_top(doc, height);
-    let gutter = doc.lines.len().to_string().len() + 1;
+    let (top, left) = visible_origin(doc, editor);
+    let gutter = gutter(doc);
+    let width = text_width(doc, editor);
+    let selection = doc.selection.and_then(|((sl, sc), (el, ec))| {
+        let (start, end) = (sc.max(left), ec.min(left + width));
+        if sl != el || sl < top || sl >= top + height || start >= end {
+            return None;
+        }
+        Some(Rect::new(editor.x + (gutter + start - left) as u16, editor.y + (sl - top) as u16, (end - start) as u16, 1))
+    });
     let mut lines: Vec<usize> = doc.extra_carets.iter().map(|&(l, _)| l).collect();
     lines.push(doc.cursor.0);
     lines.sort();
@@ -145,8 +138,8 @@ pub fn areas(area: Rect, state: &EditorState) -> Areas {
         .into_iter()
         .filter(|&l| l >= top && l < top + height)
         .map(|l| {
-            let width = (doc.lines[l].chars().count().max(1) as u16).min(editor.width.saturating_sub(gutter as u16));
-            Rect::new(editor.x + gutter as u16, editor.y + (l - top) as u16, width, 1)
+            let shown = doc.lines[l].chars().count().saturating_sub(left).max(1).min(width.max(1));
+            Rect::new(editor.x + gutter as u16, editor.y + (l - top) as u16, shown as u16, 1)
         })
         .collect();
     Areas {
@@ -162,7 +155,7 @@ pub fn areas(area: Rect, state: &EditorState) -> Areas {
 }
 
 fn render_tab_bar(frame: &mut Frame, state: &EditorState, area: Rect) {
-    let mut spans: Vec<Span> = vec![Span::styled(" ee ", theme::block(theme::HOT)), Span::raw(" ")];
+    let mut spans: Vec<Span> = vec![Span::styled(" ee ", theme::block(theme::pal().hot)), Span::raw(" ")];
     for (i, tab) in state.tabs.iter().enumerate() {
         if i == state.active {
             let label = if tab.dirty {
@@ -170,11 +163,11 @@ fn render_tab_bar(frame: &mut Frame, state: &EditorState, area: Rect) {
             } else {
                 format!(" {} ", tab.name)
             };
-            spans.push(Span::styled(label, theme::block(theme::ICE)));
+            spans.push(Span::styled(label, theme::block(theme::pal().ice)));
         } else {
             spans.push(Span::styled(format!(" {}", tab.name), theme::dim()));
             if tab.dirty {
-                spans.push(Span::styled(" ●", Style::default().fg(theme::AMBER)));
+                spans.push(Span::styled(" ●", Style::default().fg(theme::pal().amber)));
             }
             spans.push(Span::raw(" "));
         }
@@ -194,10 +187,10 @@ fn render_editor(
     let cursor_line = doc.cursor.0;
     let cursor_col = doc.cursor.1;
 
-    let top_line = visible_top(doc, height);
+    let (top_line, left) = visible_origin(doc, area);
 
     let num_width = doc.lines.len().to_string().len();
-    let text_width = (area.width as usize).saturating_sub(num_width + 1);
+    let text_width = text_width(doc, area);
     let markdown = doc.markdown_view();
     let mut tinted_rows: Vec<(usize, Color)> = Vec::new();
 
@@ -216,18 +209,16 @@ fn render_editor(
                 )];
                 let cells = rendered.cells();
                 let pad = centered_pad(rendered, cells.len(), text_width);
-                if pad > 0 {
-                    spans.push(Span::raw(" ".repeat(pad)));
-                }
+                let mut shown: Vec<(char, Style)> = vec![(' ', Style::default()); pad];
                 for &(c, style, src) in &cells {
                     let hit = highlights.iter().any(|&(l, s, e)| l == line_idx && s <= src && src < e);
-                    let style = if hit { theme::find_match() } else { theme::text().patch(style) };
-                    spans.push(Span::styled(c.to_string(), style));
+                    shown.push((c, if hit { theme::find_match() } else { theme::text().patch(style) }));
                 }
                 if let Some((c, style)) = rendered.fill {
-                    let rest = text_width.saturating_sub(pad + cells.len());
-                    spans.push(Span::styled(c.to_string().repeat(rest), style));
+                    let rest = (left + text_width).saturating_sub(shown.len());
+                    shown.extend(std::iter::repeat_n((c, style), rest));
                 }
+                spans.extend(shown.into_iter().skip(left).take(text_width).map(|(c, style)| Span::styled(c.to_string(), style)));
                 if let Some(bg) = rendered.bg {
                     tinted_rows.push((i, bg));
                 }
@@ -248,12 +239,12 @@ fn render_editor(
             }
             let caret_style = |active: bool| match (active, focused) {
                 (true, true) => theme::caret(),
-                (true, false) => theme::block(theme::GHOST),
+                (true, false) => theme::block(theme::pal().ghost),
                 (false, _) => theme::extra_caret(),
             };
             let is_cursor_line = line_idx == cursor_line;
             let number_style = if is_cursor_line {
-                Style::default().fg(theme::HOT).add_modifier(Modifier::BOLD)
+                Style::default().fg(theme::pal().hot).add_modifier(Modifier::BOLD)
             } else {
                 theme::dim()
             };
@@ -262,7 +253,7 @@ fn render_editor(
                 format!("{:width$} ", line_idx + 1, width = num_width),
                 number_style,
             ));
-            for (col, c) in chars.iter().enumerate() {
+            for (col, c) in chars.iter().enumerate().skip(left).take(text_width) {
                 let style = match caret_cols.iter().find(|(cc, _)| *cc == col) {
                     Some((_, active)) => caret_style(*active),
                     None => {
@@ -282,7 +273,7 @@ fn render_editor(
             }
             // Carets sitting at the end of the line get their own marker cell.
             for (col, is_active) in &caret_cols {
-                if *col == chars.len() {
+                if *col == chars.len() && *col >= left && *col < left + text_width.max(1) {
                     spans.push(Span::styled(" ", caret_style(*is_active)));
                 }
             }
@@ -296,7 +287,7 @@ fn render_editor(
     }
     if cursor_line >= top_line && cursor_line - top_line < height {
         let row = Rect::new(area.x, area.y + (cursor_line - top_line) as u16, area.width, 1);
-        frame.buffer_mut().set_style(row, Style::default().bg(theme::CURSOR_LINE));
+        frame.buffer_mut().set_style(row, Style::default().bg(theme::pal().cursor_line));
     }
     frame.render_widget(Paragraph::new(lines), area);
 }
@@ -317,16 +308,37 @@ fn max_top(doc: &Document, height: usize) -> usize {
     doc.lines.len().saturating_sub(height.max(1))
 }
 
-fn visible_top(doc: &Document, height: usize) -> usize {
-    let anchor = Some((doc.cursor, doc.rev()));
-    let top = if doc.view_anchor.get() == anchor {
-        doc.scroll_top.get().min(max_top(doc, height))
+fn gutter(doc: &Document) -> usize {
+    doc.lines.len().to_string().len() + 1
+}
+
+fn text_width(doc: &Document, area: Rect) -> usize {
+    (area.width as usize).saturating_sub(gutter(doc))
+}
+
+fn follow_column(left: usize, col: usize, width: usize) -> usize {
+    if width == 0 || (col >= left && col < left + width) {
+        left
     } else {
-        scroll_for(doc.scroll_top.get(), doc.cursor.0, height).min(max_top(doc, height))
+        col.saturating_sub(width / 2)
+    }
+}
+
+fn visible_origin(doc: &Document, area: Rect) -> (usize, usize) {
+    let height = area.height as usize;
+    let anchor = Some((doc.cursor, doc.rev()));
+    let (top, left) = if doc.view_anchor.get() == anchor {
+        (doc.scroll_top.get().min(max_top(doc, height)), doc.scroll_left.get())
+    } else {
+        (
+            scroll_for(doc.scroll_top.get(), doc.cursor.0, height).min(max_top(doc, height)),
+            follow_column(doc.scroll_left.get(), doc.cursor.1, text_width(doc, area)),
+        )
     };
     doc.view_anchor.set(anchor);
     doc.scroll_top.set(top);
-    top
+    doc.scroll_left.set(left);
+    (top, left)
 }
 
 pub fn page_rows(area: Rect, state: &EditorState) -> usize {
@@ -339,9 +351,18 @@ pub fn page_rows(area: Rect, state: &EditorState) -> usize {
 
 pub fn scroll_view(area: Rect, state: &EditorState, lines: isize) {
     let doc = &state.tabs[state.active];
-    let height = editor_rect_for(area, state.mode).height as usize;
-    let top = visible_top(doc, height) as isize + lines;
-    doc.scroll_top.set(top.clamp(0, max_top(doc, height) as isize) as usize);
+    let editor = editor_rect_for(area, state.mode);
+    let top = visible_origin(doc, editor).0 as isize + lines;
+    doc.scroll_top.set(top.clamp(0, max_top(doc, editor.height as usize) as isize) as usize);
+}
+
+pub fn scroll_sideways(area: Rect, state: &EditorState, cols: isize) {
+    let doc = &state.tabs[state.active];
+    let editor = editor_rect_for(area, state.mode);
+    let widest = doc.lines.iter().map(|l| l.chars().count()).max().unwrap_or(0);
+    let most = widest.saturating_sub(text_width(doc, editor) / 2);
+    let left = visible_origin(doc, editor).1.saturating_add_signed(cols);
+    doc.scroll_left.set(left.min(most));
 }
 
 fn in_selection(doc: &Document, line_idx: usize, col: usize) -> bool {
@@ -405,11 +426,10 @@ pub fn link_at(editor_area: Rect, mx: u16, my: u16, doc: &Document) -> Option<St
     let (line, _) = mouse_to_doc(editor_area, mx, my, doc)?;
     let view = doc.markdown_view().filter(|_| !doc.is_raw_line(line))?;
     let rendered = &view.lines[line];
-    let gutter = doc.lines.len().to_string().len() + 1;
-    let width = (editor_area.width as usize).saturating_sub(gutter);
-    let pad = centered_pad(rendered, rendered.cells().len(), width);
-    let dcol = (mx.saturating_sub(editor_area.x) as usize).checked_sub(gutter + pad)?;
-    rendered.link_at(dcol).map(str::to_string)
+    let pad = centered_pad(rendered, rendered.cells().len(), text_width(doc, editor_area));
+    let left = visible_origin(doc, editor_area).1;
+    let dcol = (mx.saturating_sub(editor_area.x) as usize).checked_sub(gutter(doc))? + left;
+    rendered.link_at(dcol.checked_sub(pad)?).map(str::to_string)
 }
 
 pub fn editor_rect_for(area: Rect, mode: Mode) -> Rect {
@@ -434,18 +454,16 @@ pub fn mouse_to_doc(editor_area: Rect, mx: u16, my: u16, doc: &Document) -> Opti
     }
     let row_in = (ey - editor_area.y as isize) as usize;
     let col_in = (ex - editor_area.x as isize) as usize;
-    let top_line = visible_top(doc, height);
+    let (top_line, left) = visible_origin(doc, editor_area);
     let line = top_line + row_in;
     if line >= doc.lines.len() {
         return None;
     }
-    let gutter = doc.lines.len().to_string().len() + 1;
-    let text_col = col_in.saturating_sub(gutter);
+    let text_col = col_in.saturating_sub(gutter(doc)) + left;
     let col = match doc.markdown_view().filter(|_| !doc.is_raw_line(line)) {
         Some(view) => {
             let rendered = &view.lines[line];
-            let width = (editor_area.width as usize).saturating_sub(gutter);
-            let pad = centered_pad(rendered, rendered.cells().len(), width);
+            let pad = centered_pad(rendered, rendered.cells().len(), text_width(doc, editor_area));
             rendered.display_to_source(text_col.saturating_sub(pad), doc.lines[line].chars().count())
         }
         None => text_col,
@@ -454,8 +472,8 @@ pub fn mouse_to_doc(editor_area: Rect, mx: u16, my: u16, doc: &Document) -> Opti
 }
 
 fn input_spans(spans: &mut Vec<Span>, label: &'static str, value: &str, focused: bool) {
-    spans.push(Span::styled(label, Style::default().fg(theme::ICE)));
-    spans.push(Span::styled("▸ ", Style::default().fg(theme::HOT)));
+    spans.push(Span::styled(label, Style::default().fg(theme::pal().ice)));
+    spans.push(Span::styled("▸ ", Style::default().fg(theme::pal().hot)));
     spans.push(Span::styled(value.to_string(), theme::text()));
     if focused {
         spans.push(Span::styled(" ", theme::caret()));
@@ -476,7 +494,7 @@ fn render_find_bar(frame: &mut Frame, state: &EditorState, hits: &[crate::state:
     spans.push(Span::styled(
         "Aa",
         if find.case_sensitive {
-            Style::default().fg(theme::AMBER).add_modifier(Modifier::BOLD)
+            Style::default().fg(theme::pal().amber).add_modifier(Modifier::BOLD)
         } else {
             theme::dim()
         },
@@ -488,9 +506,9 @@ fn render_find_bar(frame: &mut Frame, state: &EditorState, hits: &[crate::state:
         None => format!("  {} matches", hits.len()),
     };
     let count_style = if !find.query.is_empty() && hits.is_empty() {
-        Style::default().fg(theme::ERROR)
+        Style::default().fg(theme::pal().error)
     } else {
-        Style::default().fg(theme::ICE)
+        Style::default().fg(theme::pal().ice)
     };
     spans.push(Span::styled(count, count_style));
     if let Some(i) = state.current_hit(hits).filter(|_| find.all_tabs) {
@@ -537,24 +555,24 @@ fn render_status_bar(frame: &mut Frame, state: &EditorState, area: Rect) {
         None => 0,
     };
     let mode_color = match state.mode {
-        Mode::Normal => theme::ICE,
-        Mode::Picker => theme::HOT,
-        Mode::Find => theme::HOT,
-        Mode::Replace => theme::AMBER,
-        Mode::Prompt(_) => theme::ICE,
+        Mode::Normal => theme::pal().ice,
+        Mode::Picker => theme::pal().hot,
+        Mode::Find => theme::pal().hot,
+        Mode::Replace => theme::pal().amber,
+        Mode::Prompt(_) => theme::pal().ice,
     };
     let mut spans: Vec<Span> = vec![
         Span::styled(format!(" {} ", state.mode_str().to_lowercase()), theme::block(mode_color)),
         Span::styled(format!(" {}", doc.name), theme::text()),
     ];
     if doc.dirty {
-        spans.push(Span::styled(" ●", Style::default().fg(theme::AMBER)));
+        spans.push(Span::styled(" ●", Style::default().fg(theme::pal().amber)));
     }
     if !state.status.is_empty() {
         let style = match state.alert {
-            Some(Alert::Warn) => Style::default().fg(theme::AMBER),
-            Some(Alert::Error) => Style::default().fg(theme::ERROR).add_modifier(Modifier::BOLD),
-            None => Style::default().fg(theme::ICE),
+            Some(Alert::Warn) => Style::default().fg(theme::pal().amber),
+            Some(Alert::Error) => Style::default().fg(theme::pal().error).add_modifier(Modifier::BOLD),
+            None => Style::default().fg(theme::pal().ice),
         };
         spans.push(Span::styled(format!("   {}", state.status), style));
     }
@@ -609,27 +627,27 @@ fn render_update_modal(frame: &mut Frame, state: &EditorState, area: Rect) {
     };
     let block = Block::bordered()
         .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(theme::ICE))
-        .style(Style::default().bg(theme::VOID));
+        .border_style(Style::default().fg(theme::pal().ice))
+        .style(Style::default().bg(theme::pal().void));
     let inner = block.inner(rect);
     frame.render_widget(Clear, rect);
     frame.render_widget(block, rect);
-    let key = |k: &str| Span::styled(format!(" {} ", k), Style::default().bg(theme::KEYCAP).fg(theme::TEXT).add_modifier(Modifier::BOLD));
+    let key = |k: &str| Span::styled(format!(" {} ", k), Style::default().bg(theme::pal().keycap).fg(theme::pal().text).add_modifier(Modifier::BOLD));
     let mut lines: Vec<Line> = LOGO
         .iter()
         .enumerate()
-        .map(|(i, row)| Line::styled(*row, Style::default().fg(lerp(theme::HOT, theme::ICE, i as f32 / (LOGO.len() - 1) as f32))))
+        .map(|(i, row)| Line::styled(*row, Style::default().fg(lerp(theme::pal().hot, theme::pal().ice, i as f32 / (LOGO.len() - 1) as f32))))
         .collect();
     lines.push(Line::default());
-    lines.push(Line::styled("update available", Style::default().fg(theme::ICE).add_modifier(Modifier::BOLD)));
+    lines.push(Line::styled("update available", Style::default().fg(theme::pal().ice).add_modifier(Modifier::BOLD)));
     lines.push(Line::from(vec![
         Span::styled(from.clone(), theme::dim()),
-        Span::styled("  →  ", Style::default().fg(theme::HOT)),
+        Span::styled("  →  ", Style::default().fg(theme::pal().hot)),
         Span::styled(to.clone(), theme::text().add_modifier(Modifier::BOLD)),
     ]));
     lines.push(Line::default());
     if state.has_unsaved() {
-        lines.push(Line::styled("save your changes first (Ctrl+S)", Style::default().fg(theme::AMBER)));
+        lines.push(Line::styled("save your changes first (Ctrl+S)", Style::default().fg(theme::pal().amber)));
     }
     lines.push(Line::from(vec![key("Enter"), Span::styled(" restart to update    ", theme::text()), key("Esc"), Span::styled(" keep working", theme::text())]));
     frame.render_widget(Paragraph::new(lines).alignment(Alignment::Center), inner);
@@ -755,7 +773,7 @@ mod tests {
         let mut t = Terminal::new(TestBackend::new(30, 8)).unwrap();
         t.draw(|f| render(f, &state)).unwrap();
         let buf = t.backend().buffer();
-        let selected = |x: u16, y: u16| buf.cell((x, y)).unwrap().bg == theme::SELECTION;
+        let selected = |x: u16, y: u16| buf.cell((x, y)).unwrap().bg == theme::pal().selection;
         let (gutter, top) = (2, 1);
         let expect = [
             ((0, 0), false),
@@ -896,7 +914,7 @@ mod tests {
         let t = draw(&state, 40, 10);
         let buf = t.backend().buffer();
         for x in 4..7 {
-            assert_eq!(buf.cell((x, 1)).unwrap().bg, theme::SELECTION, "the selection rect covers selected cells");
+            assert_eq!(buf.cell((x, 1)).unwrap().bg, theme::pal().selection, "the selection rect covers selected cells");
         }
         assert_eq!((a.popup, a.modal), (None, None));
         state.offer_update("a".into(), "b".into());
@@ -913,8 +931,8 @@ mod tests {
         }
         let t = draw(&state, 60, 8);
         let buf = t.backend().buffer();
-        assert_eq!(buf.cell((13, 1)).unwrap().bg, theme::MATCH, "the second beta is highlighted");
-        assert_ne!(buf.cell((8, 1)).unwrap().bg, theme::MATCH, "alpha is not");
+        assert_eq!(buf.cell((13, 1)).unwrap().bg, theme::pal().find_match, "the second beta is highlighted");
+        assert_ne!(buf.cell((8, 1)).unwrap().bg, theme::pal().find_match, "alpha is not");
 
         state.find.query = "a-very-long-query".to_string();
         let rows = render_rows(draw(&state, 60, 8).backend().buffer());
@@ -929,7 +947,7 @@ mod tests {
         let t = draw(&state, 60, 8);
         let row: String = render_rows(t.backend().buffer())[3].clone();
         let x = row.find("beta").unwrap() as u16;
-        assert_eq!(t.backend().buffer().cell((x, 3)).unwrap().bg, theme::MATCH, "matches show on rendered markdown too");
+        assert_eq!(t.backend().buffer().cell((x, 3)).unwrap().bg, theme::pal().find_match, "matches show on rendered markdown too");
     }
 
     #[test]
@@ -963,5 +981,40 @@ mod tests {
         state.apply(crate::keys::Action::FindAction);
         let popup = popup_rect(area, &state).unwrap();
         assert_eq!(page_rows(area, &state), popup.height as usize - 3, "pickers page by their visible rows");
+    }
+
+    #[test]
+    fn long_lines_scroll_sideways_to_follow_the_caret() {
+        let long: String = (0..200).map(|i| char::from(b'0' + (i % 10) as u8)).collect();
+        let mut state = EditorState::new();
+        state.tabs[0] = Document::with_content("t.md", &format!("{}\nshort\n---\n{} [go](#target)", long, "x".repeat(160)));
+        state.tabs[0].cursor = (0, 150);
+        let area = Rect::new(0, 0, 30, 8);
+        let t = draw(&state, 30, 8);
+        let rows = render_rows(t.backend().buffer());
+        let editor = editor_rect_for(area, state.mode);
+        let (top, left) = visible_origin(&state.tabs[0], editor);
+        assert_eq!((top, left), (0, 150 - 28 / 2), "the caret is brought to the middle");
+        assert!(rows[1].starts_with("1 6789"), "{:?}", rows[1]);
+        let caret_x = 2 + (150 - left) as u16;
+        assert_eq!(t.backend().buffer().cell((caret_x, 1)).unwrap().bg, theme::pal().hot);
+        assert_eq!(rows[2].trim_end(), "2", "a short line is scrolled out of view");
+        assert_eq!(rows[3].chars().skip(2).collect::<String>(), "─".repeat(28), "a rule still fills the width");
+        assert_eq!(mouse_to_doc(editor, 5, 1, &state.tabs[0]), Some((0, left + 3)));
+        assert_eq!(areas(area, &state).caret_rows, vec![Rect::new(2, 1, 28, 1)]);
+        assert_eq!(link_at(editor, 2 + (161 - left) as u16, 4, &state.tabs[0]).as_deref(), Some("#target"), "links far to the right stay clickable");
+
+        scroll_sideways(area, &state, 6);
+        assert_eq!(visible_origin(&state.tabs[0], editor).1, left + 6, "the wheel moves only the view");
+        assert_eq!(state.tabs[0].cursor, (0, 150));
+        scroll_sideways(area, &state, 1000);
+        assert_eq!(visible_origin(&state.tabs[0], editor).1, 200 - 14, "never past the longest line");
+        state.tabs[0].cursor = (0, 199);
+        assert_eq!(areas(area, &state).caret_rows, vec![Rect::new(2, 1, 200 - 186, 1)], "only the part of the line on screen, without moving a view that already shows the caret");
+
+        state.apply(crate::keys::Action::Home);
+        let rows = render_rows(draw(&state, 30, 8).backend().buffer());
+        assert!(rows[1].starts_with("1 0123456789"), "Home scrolls back: {:?}", rows[1]);
+        assert_eq!(rows[2].trim_end(), "2 short");
     }
 }
