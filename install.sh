@@ -45,7 +45,7 @@ banner() {
     printf '  ▄▀▀▀▀▄  ▄▀▀▀▀▄\n'
     printf '%s  █▄▄▄▄█  █▄▄▄▄█\n' "$AMBER"
     printf '%s  █       █\n' "$ICE"
-    printf '  ▀▄▄▄▄▀  ▀▄▄▄▄▀%s\n' "$RESET"
+    printf '  ▀▄▄▄▄▀  ▀▄▄▄▄▀%s\n\n' "$RESET"
     printf '  %seric'"'"'s own editor · installer%s\n\n' "$GHOST" "$RESET"
 }
 
@@ -222,7 +222,7 @@ finish() {
         add_to_omarchy
     fi
     check_path
-    printf '\n  %s%s%s%s run %see notes.md%s to start.\n\n' "$ICE" "$BOLD" "$1" "$RESET" "$BOLD" "$RESET"
+    printf '\n  %s%s%s%s run %s%see%s to start.\n\n' "$ICE" "$BOLD" "$1" "$RESET" "$HOT" "$BOLD" "$RESET"
 }
 
 install_ee() {
