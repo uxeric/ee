@@ -4,6 +4,61 @@ use std::rc::Rc;
 use crate::markdown::{self, MdView};
 
 const MAX_UNDO: usize = 100;
+const INDENT: usize = 4;
+
+static NEXT_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+fn next_id() -> u64 {
+    NEXT_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+}
+
+type Selection = ((usize, usize), (usize, usize));
+
+fn char_class(c: char) -> u8 {
+    if c.is_alphanumeric() || c == '_' {
+        0
+    } else {
+        1
+    }
+}
+
+fn contains(outer: Selection, inner: Selection) -> bool {
+    outer.0 <= inner.0 && inner.1 <= outer.1
+}
+
+fn enclosing_pair(chars: &[char], start: usize, end: usize, open: char, close: char) -> Option<(usize, usize)> {
+    if open == close {
+        let o = chars[..start.min(chars.len())].iter().rposition(|&c| c == open)?;
+        let c = chars.get(end..)?.iter().position(|&c| c == close)? + end;
+        return Some((o, c));
+    }
+    let mut depth = 0;
+    let mut o = None;
+    for i in (0..start.min(chars.len())).rev() {
+        if chars[i] == close {
+            depth += 1;
+        } else if chars[i] == open {
+            if depth == 0 {
+                o = Some(i);
+                break;
+            }
+            depth -= 1;
+        }
+    }
+    let o = o?;
+    let mut depth = 0;
+    for (i, &ch) in chars.iter().enumerate().skip(end) {
+        if ch == open {
+            depth += 1;
+        } else if ch == close {
+            if depth == 0 {
+                return Some((o, i));
+            }
+            depth -= 1;
+        }
+    }
+    None
+}
 
 fn file_name(path: &str) -> String {
     std::path::Path::new(path)
@@ -21,6 +76,7 @@ pub struct Snapshot {
 }
 
 pub struct Document {
+    pub id: u64,
     pub name: String,
     pub lines: Vec<String>,
     pub cursor: (usize, usize),
@@ -31,6 +87,8 @@ pub struct Document {
     pub dirty: bool,
     pub scroll_top: Cell<usize>,
     pub view_anchor: Cell<Option<((usize, usize), u64)>>,
+    expansions: Vec<(Option<Selection>, (usize, usize))>,
+    expanded_to: Option<Selection>,
     undo: Vec<Snapshot>,
     redo: Vec<Snapshot>,
     rev: u64,
@@ -40,6 +98,7 @@ pub struct Document {
 impl Document {
     pub fn new(name: &str) -> Self {
         Self {
+            id: next_id(),
             name: name.to_string(),
             lines: vec![String::new()],
             cursor: (0, 0),
@@ -50,6 +109,8 @@ impl Document {
             dirty: false,
             scroll_top: Cell::new(0),
             view_anchor: Cell::new(None),
+            expansions: Vec::new(),
+            expanded_to: None,
             undo: Vec::new(),
             redo: Vec::new(),
             rev: 0,
@@ -60,6 +121,7 @@ impl Document {
     /// Create a document from pre-loaded `content`, split into lines by '\n'.
     pub fn with_content(name: &str, content: &str) -> Self {
         Self {
+            id: next_id(),
             name: name.to_string(),
             lines: content.split('\n').map(|s| s.to_string()).collect(),
             cursor: (0, 0),
@@ -70,6 +132,8 @@ impl Document {
             dirty: false,
             scroll_top: Cell::new(0),
             view_anchor: Cell::new(None),
+            expansions: Vec::new(),
+            expanded_to: None,
             undo: Vec::new(),
             redo: Vec::new(),
             rev: 0,
@@ -649,10 +713,431 @@ impl Document {
         }
     }
 
+    pub fn word_right(&mut self) {
+        let (line, col) = self.cursor;
+        let chars: Vec<char> = self.lines[line].chars().collect();
+        if col >= chars.len() {
+            if line + 1 < self.lines.len() {
+                self.cursor = (line + 1, 0);
+            }
+            return;
+        }
+        let mut i = col;
+        while i < chars.len() && chars[i].is_whitespace() {
+            i += 1;
+        }
+        if i < chars.len() {
+            let class = char_class(chars[i]);
+            while i < chars.len() && char_class(chars[i]) == class {
+                i += 1;
+            }
+        }
+        self.cursor = (line, i);
+    }
+
+    pub fn word_left(&mut self) {
+        let (line, col) = self.cursor;
+        if col == 0 {
+            if line > 0 {
+                self.cursor = (line - 1, self.lines[line - 1].chars().count());
+            }
+            return;
+        }
+        let chars: Vec<char> = self.lines[line].chars().collect();
+        let mut i = col.min(chars.len());
+        while i > 0 && chars[i - 1].is_whitespace() {
+            i -= 1;
+        }
+        if i > 0 {
+            let class = char_class(chars[i - 1]);
+            while i > 0 && char_class(chars[i - 1]) == class {
+                i -= 1;
+            }
+        }
+        self.cursor = (line, i);
+    }
+
+    pub fn start_new_line(&mut self) {
+        self.snapshot();
+        self.selection = None;
+        self.occurrences.clear();
+        let mut caret_lines: Vec<usize> = self.extra_carets.iter().map(|&(l, _)| l).collect();
+        caret_lines.push(self.cursor.0);
+        caret_lines.sort();
+        caret_lines.dedup();
+        let mut lines = Vec::with_capacity(self.lines.len() + caret_lines.len());
+        let mut new_pos: Vec<(usize, usize)> = Vec::new();
+        for (i, line) in self.lines.iter().enumerate() {
+            lines.push(line.clone());
+            if caret_lines.binary_search(&i).is_ok() {
+                let indent: String = line.chars().take_while(|c| *c == ' ' || *c == '\t').collect();
+                new_pos.push((lines.len(), indent.chars().count()));
+                lines.push(indent);
+            }
+        }
+        let active = caret_lines.binary_search(&self.cursor.0).unwrap();
+        self.lines = lines;
+        self.cursor = new_pos[active];
+        self.extra_carets = new_pos.iter().enumerate().filter(|(i, _)| *i != active).map(|(_, p)| *p).collect();
+    }
+
+    pub fn extend_selection(&mut self) {
+        if self.selection != self.expanded_to {
+            self.expansions.clear();
+        }
+        let current = self.selection.unwrap_or((self.cursor, self.cursor));
+        let Some(next) = self.expansion_candidates(current).into_iter().filter(|c| contains(*c, current) && *c != current).min_by_key(|c| self.span_len(*c)) else {
+            return;
+        };
+        self.expansions.push((self.selection, self.cursor));
+        self.occurrences.clear();
+        self.selection = Some(next);
+        self.cursor = next.1;
+        self.expanded_to = self.selection;
+    }
+
+    pub fn shrink_selection(&mut self) {
+        if self.selection != self.expanded_to {
+            self.expansions.clear();
+            return;
+        }
+        if let Some((selection, cursor)) = self.expansions.pop() {
+            self.selection = selection;
+            self.cursor = cursor;
+            self.expanded_to = selection;
+        }
+    }
+
+    fn span_len(&self, ((sl, sc), (el, ec)): Selection) -> usize {
+        if sl == el {
+            return ec - sc;
+        }
+        let mut n = self.lines[sl].chars().count() - sc + ec;
+        for l in sl + 1..el {
+            n += self.lines[l].chars().count() + 1;
+        }
+        n + 1
+    }
+
+    fn expansion_candidates(&self, ((sl, sc), (el, ec)): Selection) -> Vec<Selection> {
+        let mut out = Vec::new();
+        let len = |l: usize| self.lines[l].chars().count();
+        if sl == el {
+            let chars: Vec<char> = self.lines[sl].chars().collect();
+            let is_word = |c: char| c.is_alphanumeric() || c == '_';
+            let (mut a, mut b) = (sc, ec);
+            while a > 0 && is_word(chars[a - 1]) {
+                a -= 1;
+            }
+            while b < chars.len() && is_word(chars[b]) {
+                b += 1;
+            }
+            out.push(((sl, a), (sl, b)));
+            for (open, close) in [('(', ')'), ('[', ']'), ('{', '}'), ('<', '>'), ('"', '"'), ('\'', '\''), ('`', '`')] {
+                if let Some((o, c)) = enclosing_pair(&chars, sc, ec, open, close) {
+                    out.push(((sl, o + 1), (sl, c)));
+                    out.push(((sl, o), (sl, c + 1)));
+                }
+            }
+        }
+        let first = self.lines[sl].chars().take_while(|c| c.is_whitespace()).count();
+        let last_len = self.lines[el].trim_end().chars().count();
+        out.push(((sl, first), (el, last_len.max(first.min(len(el))))));
+        out.push(((sl, 0), (el, len(el))));
+        let blank = |l: usize| self.lines[l].trim().is_empty();
+        if !blank(sl) && !blank(el) {
+            let (mut a, mut b) = (sl, el);
+            while a > 0 && !blank(a - 1) {
+                a -= 1;
+            }
+            while b + 1 < self.lines.len() && !blank(b + 1) {
+                b += 1;
+            }
+            out.push(((a, 0), (b, len(b))));
+        }
+        let last = self.lines.len() - 1;
+        out.push(((0, 0), (last, len(last))));
+        out
+    }
+
     pub fn home(&mut self) {
-        let (line, _) = self.cursor;
-        let new = (line, 0);
-        self.cursor = new;
+        let (line, col) = self.cursor;
+        let first = self.lines[line].chars().take_while(|c| c.is_whitespace()).count();
+        self.cursor = (line, if col == first { 0 } else { first });
+    }
+
+    pub fn line_start(&mut self) {
+        self.cursor.0 = self.cursor.0.min(self.lines.len() - 1);
+        self.cursor.1 = 0;
+    }
+
+    fn selected_lines(&self) -> Option<(usize, usize)> {
+        let ((sl, _), (el, ec)) = self.selection?;
+        Some((sl, if ec == 0 && el > sl { el - 1 } else { el }))
+    }
+
+    fn all_carets(&self) -> Vec<(usize, usize)> {
+        let mut carets = vec![self.cursor];
+        carets.extend(self.extra_carets.iter().copied());
+        carets
+    }
+
+    fn set_carets(&mut self, carets: Vec<(usize, usize)>) {
+        self.cursor = carets[0];
+        self.extra_carets = carets[1..].to_vec();
+    }
+
+    pub fn indent(&mut self) {
+        self.occurrences.clear();
+        if let Some((sl, last)) = self.selected_lines() {
+            self.snapshot();
+            let pad = " ".repeat(INDENT);
+            let shifted: Vec<bool> = (0..self.lines.len())
+                .map(|l| sl <= l && l <= last && !self.lines[l].is_empty())
+                .collect();
+            for (l, shift) in shifted.iter().enumerate() {
+                if *shift {
+                    self.lines[l].insert_str(0, &pad);
+                }
+            }
+            let bump = |(l, c): (usize, usize)| if shifted[l] && c > 0 { (l, c + INDENT) } else { (l, c) };
+            let ((a, b), cursor) = (self.selection.unwrap(), self.cursor);
+            self.selection = Some((bump(a), bump(b)));
+            self.cursor = bump(cursor);
+            return;
+        }
+        self.snapshot();
+        let mut carets = self.all_carets();
+        let mut order: Vec<usize> = (0..carets.len()).collect();
+        order.sort_by(|&x, &y| carets[y].cmp(&carets[x]));
+        for idx in order {
+            let (l, c) = carets[idx];
+            let n = INDENT - c % INDENT;
+            let byte = self.lines[l].char_indices().nth(c).map_or(self.lines[l].len(), |(b, _)| b);
+            self.lines[l].insert_str(byte, &" ".repeat(n));
+            for (j, p) in carets.iter_mut().enumerate() {
+                if p.0 == l && (p.1 > c || j == idx) {
+                    p.1 += n;
+                }
+            }
+        }
+        self.set_carets(carets);
+    }
+
+    pub fn unindent(&mut self) {
+        let lines: Vec<usize> = match self.selected_lines() {
+            Some((sl, last)) => (sl..=last).collect(),
+            None => {
+                let mut ls: Vec<usize> = self.all_carets().iter().map(|&(l, _)| l).collect();
+                ls.sort();
+                ls.dedup();
+                ls
+            }
+        };
+        let removed: Vec<(usize, usize)> = lines
+            .iter()
+            .map(|&l| {
+                let line = &self.lines[l];
+                let n = if line.starts_with('\t') { 1 } else { line.chars().take(INDENT).take_while(|c| *c == ' ').count() };
+                (l, n)
+            })
+            .filter(|&(_, n)| n > 0)
+            .collect();
+        if removed.is_empty() {
+            return;
+        }
+        self.snapshot();
+        self.occurrences.clear();
+        for &(l, n) in &removed {
+            self.lines[l].drain(..n);
+        }
+        let pull = |(l, c): (usize, usize)| match removed.iter().find(|&&(rl, _)| rl == l) {
+            Some(&(_, n)) => (l, c.saturating_sub(n)),
+            None => (l, c),
+        };
+        self.selection = self.selection.map(|(a, b)| (pull(a), pull(b)));
+        let carets = self.all_carets().into_iter().map(pull).collect();
+        self.set_carets(carets);
+    }
+
+    pub fn select_all(&mut self) {
+        self.extra_carets.clear();
+        self.occurrences.clear();
+        let last = self.lines.len() - 1;
+        let end = (last, self.lines[last].chars().count());
+        self.selection = if end == (0, 0) { None } else { Some(((0, 0), end)) };
+        self.cursor = end;
+    }
+
+    pub fn start_new_line_above(&mut self) {
+        self.snapshot();
+        self.selection = None;
+        self.occurrences.clear();
+        self.extra_carets.clear();
+        let line = self.cursor.0;
+        let indent: String = self.lines[line].chars().take_while(|c| *c == ' ' || *c == '\t').collect();
+        let col = indent.chars().count();
+        self.lines.insert(line, indent);
+        self.cursor = (line, col);
+    }
+
+    fn word_range_at(&self, (line, col): (usize, usize)) -> Option<(usize, usize, usize)> {
+        let chars: Vec<char> = self.lines[line].chars().collect();
+        let is_word = |c: char| c.is_alphanumeric() || c == '_';
+        let (mut a, mut b) = (col.min(chars.len()), col.min(chars.len()));
+        while a > 0 && is_word(chars[a - 1]) {
+            a -= 1;
+        }
+        while b < chars.len() && is_word(chars[b]) {
+            b += 1;
+        }
+        (a < b).then_some((line, a, b))
+    }
+
+    pub fn toggle_case(&mut self) -> bool {
+        let ranges: Vec<(usize, usize, usize)> = if !self.occurrences.is_empty() {
+            self.occurrences.clone()
+        } else if let Some(((sl, sc), (el, ec))) = self.selection {
+            (sl..=el)
+                .map(|l| (l, if l == sl { sc } else { 0 }, if l == el { ec } else { self.lines[l].chars().count() }))
+                .collect()
+        } else {
+            match self.word_range_at(self.cursor) {
+                Some(r) => vec![r],
+                None => return false,
+            }
+        };
+        let text: String = ranges
+            .iter()
+            .flat_map(|&(l, s, e)| self.lines[l].chars().skip(s).take(e - s).collect::<Vec<_>>())
+            .collect();
+        let to_upper = text.chars().any(|c| c.is_lowercase());
+        let flip = |c: char| {
+            let mapped: Vec<char> = if to_upper { c.to_uppercase().collect() } else { c.to_lowercase().collect() };
+            if mapped.len() == 1 { mapped[0] } else { c }
+        };
+        self.snapshot();
+        for &(l, s, e) in &ranges {
+            let chars: Vec<char> = self.lines[l].chars().collect();
+            self.lines[l] = chars
+                .iter()
+                .enumerate()
+                .map(|(i, &c)| if i >= s && i < e { flip(c) } else { c })
+                .collect();
+        }
+        true
+    }
+
+    pub fn toggle_comment(&mut self, prefix: &str, suffix: &str) {
+        let lines: Vec<usize> = match self.selected_lines() {
+            Some((sl, last)) => (sl..=last).collect(),
+            None => {
+                let mut ls: Vec<usize> = self.all_carets().iter().map(|&(l, _)| l).collect();
+                ls.sort();
+                ls.dedup();
+                ls
+            }
+        };
+        let targets: Vec<usize> = lines.iter().copied().filter(|&l| !self.lines[l].trim().is_empty()).collect();
+        if targets.is_empty() {
+            return;
+        }
+        let commented = |line: &str| {
+            let t = line.trim();
+            t.starts_with(prefix) && (suffix.is_empty() || t.ends_with(suffix))
+        };
+        let uncomment = targets.iter().all(|&l| commented(&self.lines[l]));
+        let indent = targets
+            .iter()
+            .map(|&l| self.lines[l].chars().take_while(|c| c.is_whitespace()).count())
+            .min()
+            .unwrap_or(0);
+        self.snapshot();
+        self.occurrences.clear();
+        let mut shifts: Vec<(usize, usize, isize)> = Vec::new();
+        for &l in &targets {
+            let chars: Vec<char> = self.lines[l].chars().collect();
+            if uncomment {
+                let lead = chars.iter().take_while(|c| c.is_whitespace()).count();
+                let mut body: String = chars[lead..].iter().collect();
+                body = body[prefix.len()..].to_string();
+                let mut removed = prefix.chars().count();
+                if body.starts_with(' ') {
+                    body.remove(0);
+                    removed += 1;
+                }
+                if !suffix.is_empty() {
+                    body = body.trim_end().trim_end_matches(suffix).trim_end().to_string();
+                }
+                self.lines[l] = chars[..lead].iter().collect::<String>() + &body;
+                shifts.push((l, lead, -(removed as isize)));
+            } else {
+                let head: String = chars[..indent].iter().collect();
+                let tail: String = chars[indent..].iter().collect();
+                let tail = if suffix.is_empty() { tail } else { format!("{} {}", tail, suffix) };
+                self.lines[l] = format!("{}{} {}", head, prefix, tail);
+                shifts.push((l, indent, prefix.chars().count() as isize + 1));
+            }
+        }
+        let clamp = |this: &Document, (l, c): (usize, usize)| {
+            let (l, c) = match shifts.iter().find(|s| s.0 == l) {
+                Some(&(_, at, d)) if c >= at => (l, (c as isize + d).max(at as isize) as usize),
+                _ => (l, c),
+            };
+            (l, c.min(this.lines[l].chars().count()))
+        };
+        self.selection = self.selection.map(|(a, b)| (clamp(self, a), clamp(self, b)));
+        let carets = self.all_carets().into_iter().map(|p| clamp(self, p)).collect();
+        self.set_carets(carets);
+    }
+
+    pub fn click_at(&mut self, line: usize, col: usize, clicks: u8) {
+        self.extra_carets.clear();
+        self.occurrences.clear();
+        self.selection = None;
+        let line = line.min(self.lines.len() - 1);
+        self.cursor = (line, col.min(self.lines[line].chars().count()));
+        match clicks {
+            2 => {
+                if let Some((l, a, b)) = self.word_range_at(self.cursor) {
+                    self.selection = Some(((l, a), (l, b)));
+                    self.cursor = (l, b);
+                }
+            }
+            n if n >= 3 => {
+                let end = if line + 1 < self.lines.len() { (line + 1, 0) } else { (line, self.lines[line].chars().count()) };
+                self.selection = Some(((line, 0), end));
+                self.cursor = end;
+            }
+            _ => {}
+        }
+    }
+
+    pub fn select_to(&mut self, anchor: (usize, usize), line: usize, col: usize) {
+        let line = line.min(self.lines.len() - 1);
+        let pos = (line, col.min(self.lines[line].chars().count()));
+        self.extra_carets.clear();
+        self.occurrences.clear();
+        self.selection = match anchor.cmp(&pos) {
+            std::cmp::Ordering::Less => Some((anchor, pos)),
+            std::cmp::Ordering::Greater => Some((pos, anchor)),
+            std::cmp::Ordering::Equal => None,
+        };
+        self.cursor = pos;
+    }
+
+    pub fn selection_anchor(&self) -> (usize, usize) {
+        match self.selection {
+            Some((start, end)) if self.cursor == start => end,
+            Some((start, _)) => start,
+            None => self.cursor,
+        }
+    }
+
+    pub fn go_to(&mut self, line: usize, col: usize) {
+        self.clear_extra_carets();
+        let line = line.min(self.lines.len() - 1);
+        self.cursor = (line, col.min(self.lines[line].chars().count()));
     }
 
     pub fn end(&mut self) {
@@ -1126,10 +1611,24 @@ mod tests {
             ("cdef\nab", (0, 3), Document::move_down, (1, 2)),
             ("ab\ncd", (1, 2), Document::move_down, (1, 2)),
             ("hello", (0, 3), Document::home, (0, 0)),
+            ("  hi", (0, 4), Document::home, (0, 2)),
+            ("  hi", (0, 2), Document::home, (0, 0)),
+            ("  hi", (0, 0), Document::home, (0, 2)),
+            ("  hi", (0, 4), Document::line_start, (0, 0)),
             ("hello", (0, 2), Document::end, (0, 5)),
             ("a中b", (0, 0), Document::end, (0, 3)),
             ("ab\ncd", (1, 2), Document::beginning_of_file, (0, 0)),
             ("ab\ncd", (0, 0), Document::end_of_file, (1, 2)),
+            ("hello world", (0, 0), Document::word_right, (0, 5)),
+            ("hello world", (0, 5), Document::word_right, (0, 11)),
+            ("a.b", (0, 0), Document::word_right, (0, 1)),
+            ("foo   bar", (0, 3), Document::word_right, (0, 9)),
+            ("ab\ncd", (0, 2), Document::word_right, (1, 0)),
+            ("hello world", (0, 11), Document::word_left, (0, 6)),
+            ("hello world", (0, 6), Document::word_left, (0, 0)),
+            ("a.b", (0, 3), Document::word_left, (0, 2)),
+            ("ab\ncd", (1, 0), Document::word_left, (0, 2)),
+            ("é tè", (0, 0), Document::word_right, (0, 1)),
         ];
         for (i, &(text, start, movement, expected)) in cases.iter().enumerate() {
             let mut d = doc_with(text);
@@ -1400,6 +1899,9 @@ mod tests {
         assert_eq!(d.caret_lines(), vec!["ls", "echo hi"]);
         d.extra_carets.clear();
         assert_eq!(d.caret_lines(), vec!["echo hi"]);
+        d.cursor = (1, 0);
+        d.extra_carets = vec![(2, 0), (0, 1)];
+        assert_eq!(d.caret_lines(), vec!["ls", "pwd", "echo hi"], "top to bottom whatever the caret order");
     }
 
     #[test]
@@ -1430,5 +1932,163 @@ mod tests {
         d.selection = None;
         d.occurrences = vec![(4, 0, 1)];
         assert!(d.is_raw_line(4));
+    }
+
+    #[test]
+    fn start_new_line_opens_an_indented_line_below_every_caret() {
+        let mut d = doc_with("  first line\nsecond\n\tthird");
+        d.cursor = (0, 4);
+        d.extra_carets = vec![(2, 3)];
+        d.start_new_line();
+        assert_eq!(d.lines, vec!["  first line", "  ", "second", "\tthird", "\t"]);
+        assert_eq!(d.cursor, (1, 2));
+        assert_eq!(d.extra_carets, vec![(4, 1)]);
+        d.undo();
+        assert_eq!(d.lines, vec!["  first line", "second", "\tthird"]);
+    }
+
+    #[test]
+    fn extend_selection_grows_step_by_step_and_shrink_walks_back() {
+        let mut d = doc_with("intro\n    call(\"hello world\") now\nmore\n\nnext");
+        d.cursor = (1, 18);
+        let mut steps = Vec::new();
+        for _ in 0..9 {
+            d.extend_selection();
+            steps.push(d.selected_text().unwrap());
+        }
+        assert_eq!(
+            steps,
+            [
+                "world",
+                "hello world",
+                "\"hello world\"",
+                "(\"hello world\")",
+                "call(\"hello world\")",
+                "call(\"hello world\") now",
+                "    call(\"hello world\") now",
+                "intro\n    call(\"hello world\") now\nmore",
+                "intro\n    call(\"hello world\") now\nmore\n\nnext",
+            ]
+        );
+        d.shrink_selection();
+        d.shrink_selection();
+        assert_eq!(d.selected_text().as_deref(), Some("    call(\"hello world\") now"));
+        d.extend_selection();
+        assert_eq!(d.selected_text().as_deref(), Some("intro\n    call(\"hello world\") now\nmore"), "extend resumes from there");
+        for _ in 0..10 {
+            d.shrink_selection();
+        }
+        assert_eq!((d.selection, d.cursor), (None, (1, 18)), "back to the caret where it started");
+        assert!(!d.dirty, "selection changes are not edits");
+    }
+
+    #[test]
+    fn tab_indents_to_the_next_stop_at_every_caret_and_shift_tab_unindents() {
+        let mut d = doc_with("ab\ncdef");
+        d.cursor = (0, 1);
+        d.extra_carets = vec![(1, 3)];
+        d.indent();
+        assert_eq!(d.lines, vec!["a   b", "cde f"]);
+        assert_eq!((d.cursor, d.extra_carets.clone()), ((0, 4), vec![(1, 4)]));
+        d.undo();
+        assert_eq!(d.lines, vec!["ab", "cdef"]);
+
+        let mut d = doc_with("one\n\ntwo\nthree");
+        d.selection = Some(((0, 1), (3, 0)));
+        d.cursor = (3, 0);
+        d.indent();
+        assert_eq!(d.lines, vec!["    one", "", "    two", "three"], "empty lines and a last line at col 0 are left alone");
+        assert_eq!(d.selection, Some(((0, 5), (3, 0))));
+        d.unindent();
+        assert_eq!(d.lines, vec!["one", "", "two", "three"]);
+        assert_eq!(d.selection, Some(((0, 1), (3, 0))));
+
+        let mut d = doc_with("\ttabbed\n  two\nnone");
+        d.cursor = (0, 3);
+        d.extra_carets = vec![(1, 4), (2, 2)];
+        d.unindent();
+        assert_eq!(d.lines, vec!["tabbed", "two", "none"]);
+        assert_eq!((d.cursor, d.extra_carets.clone()), ((0, 2), vec![(1, 2), (2, 2)]));
+        let rev = d.rev();
+        d.unindent();
+        assert_eq!(d.rev(), rev, "nothing left to remove records no undo step");
+
+        let mut d = doc_with("éa");
+        d.cursor = (0, 1);
+        d.indent();
+        assert_eq!(d.lines[0], "é   a", "columns are characters, not bytes");
+    }
+
+    #[test]
+    fn select_all_new_line_above_and_toggle_case() {
+        let mut d = doc_with("ab\n  cd");
+        d.select_all();
+        assert_eq!(d.selected_text().as_deref(), Some("ab\n  cd"));
+        assert!(!d.dirty);
+        d.cursor = (1, 3);
+        d.selection = None;
+        d.start_new_line_above();
+        assert_eq!((d.lines.clone(), d.cursor), (vec!["ab".to_string(), "  ".into(), "  cd".into()], (1, 2)));
+        d.cursor = (2, 3);
+        assert!(d.toggle_case());
+        assert_eq!(d.lines[2], "  CD", "the word under the caret");
+        assert!(d.toggle_case());
+        assert_eq!(d.lines[2], "  cd", "all upper goes back to lower");
+        d.cursor = (1, 0);
+        assert!(!d.toggle_case(), "nothing under the caret");
+        let mut d = doc_with("Hello");
+        d.toggle_case();
+        assert_eq!(d.lines[0], "HELLO", "mixed case goes to upper");
+        let mut d = doc_with("abc def\nghi");
+        d.selection = Some(((0, 4), (1, 1)));
+        d.toggle_case();
+        assert_eq!(d.lines, vec!["abc DEF", "Ghi"], "only the selected range");
+        let mut d = doc_with("ab cd ab");
+        d.set_occurrences(vec![(0, 0, 2), (0, 6, 8)]);
+        d.toggle_case();
+        assert_eq!(d.lines[0], "AB cd AB", "every occurrence");
+    }
+
+    #[test]
+    fn toggle_comment_comments_the_group_at_its_indent_and_back() {
+        let mut d = doc_with("    let a = 1;\n\n  let b = 2;");
+        d.selection = Some(((0, 0), (2, 3)));
+        d.cursor = (2, 3);
+        d.toggle_comment("//", "");
+        assert_eq!(d.lines, vec!["  //   let a = 1;", "", "  // let b = 2;"]);
+        d.toggle_comment("//", "");
+        assert_eq!(d.lines, vec!["    let a = 1;", "", "  let b = 2;"]);
+        let mut d = doc_with("note");
+        d.toggle_comment("<!--", "-->");
+        assert_eq!(d.lines[0], "<!-- note -->");
+        d.toggle_comment("<!--", "-->");
+        assert_eq!(d.lines[0], "note");
+        let mut d = doc_with("// a\nb");
+        d.selection = Some(((0, 0), (1, 1)));
+        d.toggle_comment("//", "");
+        assert_eq!(d.lines, vec!["// // a", "// b"], "a partly commented group gets commented");
+        let mut d = doc_with("a\nb\nc");
+        d.extra_carets = vec![(2, 0)];
+        d.toggle_comment("#", "");
+        assert_eq!(d.lines, vec!["# a", "b", "# c"], "every caret line, and only those");
+    }
+
+    #[test]
+    fn clicks_select_words_and_lines_and_drags_extend_from_the_anchor() {
+        let mut d = doc_with("hello world\nsecond");
+        d.click_at(0, 8, 1);
+        assert_eq!((d.cursor, d.selection), ((0, 8), None));
+        d.click_at(0, 8, 2);
+        assert_eq!(d.selected_text().as_deref(), Some("world"));
+        d.click_at(0, 8, 3);
+        assert_eq!(d.selected_text().as_deref(), Some("hello world\n"));
+        d.click_at(0, 3, 1);
+        let anchor = d.selection_anchor();
+        d.select_to(anchor, 1, 3);
+        assert_eq!(d.selected_text().as_deref(), Some("lo world\nsec"));
+        d.select_to(anchor, 0, 1);
+        assert_eq!((d.selected_text().as_deref(), d.cursor), (Some("el"), (0, 1)), "dragging back past the anchor");
+        d.select_to(anchor, 5, usize::MAX);
+        assert_eq!(d.cursor, (1, 6), "clamped to the end of the document");
     }
 }

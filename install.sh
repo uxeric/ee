@@ -3,6 +3,7 @@
 #
 #   curl -fsSL https://raw.githubusercontent.com/uxeric/ee/HEAD/install.sh | bash
 #   ./install.sh                 # from a checkout: builds that checkout
+#   ./install.sh --force         # rebuild even when the installed ee is up to date
 #   ./install.sh --uninstall     # removes ee (add --purge to remove the config too)
 #
 # Settings (environment variables):
@@ -22,7 +23,10 @@ BIN_DIR="$PREFIX/bin"
 DATA_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/eoe"
 CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/eoe"
 MIN_RUST="1.91"
-LAUNCHER_NAME="Eric's Own Editor"
+LAUNCHER_NAME="ee"
+OLD_LAUNCHER_NAME="Eric's Own Editor"
+STAMP="$DATA_DIR/installed-rev"
+FORCE=0
 
 if [[ -t 1 && -z "${NO_COLOR:-}" ]]; then
     ICE=$'\e[38;2;41;240;255m' HOT=$'\e[38;2;255;42;109m' AMBER=$'\e[38;2;255;182;39m'
@@ -153,22 +157,40 @@ EOF
     ok "wrote a default config ($file)"
 }
 
+launcher_entry() {
+    printf '%s/.local/share/applications/%s.desktop' "$HOME" "$1"
+}
+
+remove_launcher() {
+    [[ -e "$(launcher_entry "$1")" ]] || return 1
+    if command -v omarchy-tui-remove > /dev/null; then
+        OMARCHY_REMOVE_NOTIFY=false omarchy-tui-remove "$1" > /dev/null
+    else
+        rm -f "$(launcher_entry "$1")"
+    fi
+}
+
 add_to_omarchy() {
     local icon="$SOURCE/assets/icon.png"
     [[ -f "$icon" ]] || icon="accessories-text-editor"
+    remove_launcher "$OLD_LAUNCHER_NAME" && ok "replaced the old \"$OLD_LAUNCHER_NAME\" launcher entry"
     if omarchy-tui-install "$LAUNCHER_NAME" "$BIN_DIR/ee" tile "$icon" > /dev/null; then
-        ok "added $LAUNCHER_NAME to the Omarchy app launcher (Super+Space)"
+        local entry
+        entry="$(launcher_entry "$LAUNCHER_NAME")"
+        sed -i "s/^Comment=.*/Comment=Eric's Own Editor, a keyboard-first text editor/" "$entry"
+        grep -q '^Keywords=' "$entry" || printf 'Keywords=eoe;editor;text;markdown;\n' >> "$entry"
+        ok "added ee to the Omarchy app launcher (Super+Space, then type ee)"
     else
         warn "could not add the app launcher entry; ee itself is installed"
     fi
 }
 
 remove_from_omarchy() {
-    local entry="$HOME/.local/share/applications/$LAUNCHER_NAME.desktop"
-    [[ -e "$entry" ]] || return 0
-    command -v omarchy-tui-remove > /dev/null || { rm -f "$entry"; return 0; }
-    OMARCHY_REMOVE_NOTIFY=false omarchy-tui-remove "$LAUNCHER_NAME" > /dev/null
-    ok "removed $LAUNCHER_NAME from the Omarchy app launcher"
+    local removed=""
+    remove_launcher "$LAUNCHER_NAME" && removed=1
+    remove_launcher "$OLD_LAUNCHER_NAME" && removed=1
+    [[ -n "$removed" ]] && ok "removed ee from the Omarchy app launcher"
+    return 0
 }
 
 check_path() {
@@ -188,6 +210,21 @@ check_path() {
     fi
 }
 
+source_rev() {
+    git -C "$SOURCE" rev-parse --is-inside-work-tree > /dev/null 2>&1 || return 0
+    [[ -z "$(git -C "$SOURCE" status --porcelain --untracked-files=no 2> /dev/null)" ]] || return 0
+    git -C "$SOURCE" rev-parse --short HEAD 2> /dev/null || true
+}
+
+finish() {
+    write_config
+    if is_omarchy; then
+        add_to_omarchy
+    fi
+    check_path
+    printf '\n  %s%s%s%s run %see notes.md%s to start.\n\n' "$ICE" "$BOLD" "$1" "$RESET" "$BOLD" "$RESET"
+}
+
 install_ee() {
     banner
     if is_omarchy; then
@@ -197,18 +234,32 @@ install_ee() {
     ensure_rust
     step "getting the source"
     find_source
+    local rev old=""
+    rev="$(source_rev)"
+    if [[ -x "$BIN_DIR/ee" ]]; then
+        [[ -f "$STAMP" ]] && old="$(< "$STAMP")"
+        if [[ -n "$rev" && "$rev" == "$old" && "$FORCE" != 1 ]]; then
+            ok "ee $rev is already installed and up to date (--force rebuilds it anyway)"
+            finish "already jacked in."
+            return
+        fi
+        step "updating ee ${old:-(earlier build)} → ${rev:-local build}"
+    else
+        step "installing ee ${rev:-(local build)}"
+    fi
     step "compiling (this takes a minute the first time)"
     (cd "$SOURCE" && cargo build --release --locked --quiet) || die "The build failed. The compiler output above says why."
     ok "built target/release/ee"
     step "installing"
     install -Dm755 "$SOURCE/target/release/ee" "$BIN_DIR/ee"
     ok "installed $BIN_DIR/ee"
-    write_config
-    if is_omarchy; then
-        add_to_omarchy
+    mkdir -p "$DATA_DIR"
+    if [[ -n "$rev" ]]; then
+        printf '%s\n' "$rev" > "$STAMP"
+    else
+        rm -f "$STAMP"
     fi
-    check_path
-    printf '\n  %s%sjacked in.%s run %see notes.md%s to start.\n\n' "$ICE" "$BOLD" "$RESET" "$BOLD" "$RESET"
+    finish "jacked in."
 }
 
 uninstall_ee() {
@@ -223,7 +274,7 @@ uninstall_ee() {
     remove_from_omarchy
     if [[ -d "$DATA_DIR" ]]; then
         rm -rf "$DATA_DIR"
-        ok "removed the downloaded source ($DATA_DIR)"
+        ok "removed $DATA_DIR (downloaded source and install record)"
     fi
     if [[ "$purge" == 1 && -d "$CONFIG_DIR" ]]; then
         rm -rf "$CONFIG_DIR"
@@ -239,8 +290,9 @@ main() {
         case "$arg" in
             --uninstall) mode=uninstall ;;
             --purge) purge=1 ;;
+            --force) FORCE=1 ;;
             -h | --help)
-                sed -n '2,16p' "${BASH_SOURCE[0]:-/dev/null}" 2> /dev/null | sed 's/^# \{0,1\}//'
+                sed -n '2,17p' "${BASH_SOURCE[0]:-/dev/null}" 2> /dev/null | sed 's/^# \{0,1\}//'
                 exit 0
                 ;;
             *) die "unknown option: $arg (try --help)" ;;

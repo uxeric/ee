@@ -8,6 +8,7 @@ mod markdown;
 mod motion;
 mod state;
 mod theme;
+mod update;
 mod ui;
 
 use std::env;
@@ -35,6 +36,22 @@ use state::{Cue, EditorState};
 fn main() -> std::io::Result<()> {
     // Load documents from any file path arguments (non-flag args).
     let args: Vec<String> = env::args().collect();
+    match args.get(1).map(String::as_str) {
+        Some("--version" | "-V") => {
+            let rev = update::installed_rev().unwrap_or_else(|| "not installed by install.sh".to_string());
+            println!("ee {} ({})", env!("CARGO_PKG_VERSION"), rev);
+            return Ok(());
+        }
+        Some("--update") => {
+            let status = update::run_installer()?;
+            std::process::exit(status.code().unwrap_or(1));
+        }
+        Some("--help" | "-h") => {
+            println!("ee: Eric's Own Editor\n\n  ee [file ...]     open files (a missing file opens empty; saving creates it)\n  ee --update       download and install the latest version\n  ee --version      show the installed version\n\nKeys, config and more: https://github.com/uxeric/ee");
+            return Ok(());
+        }
+        _ => {}
+    }
     let file_args: Vec<&str> = args[1..]
         .iter()
         .map(|a| a.as_str())
@@ -92,7 +109,18 @@ fn main() -> std::io::Result<()> {
     }
     disable_raw_mode()?;
     execute!(stdout(), DisableBracketedPaste, DisableMouseCapture, LeaveAlternateScreen)?;
-    result
+    result?;
+    if state.restart_for_update {
+        let status = update::run_installer()?;
+        if !status.success() {
+            eprintln!("ee: the update did not finish; your previous version is still installed.");
+            std::process::exit(status.code().unwrap_or(1));
+        }
+        let exe = std::env::current_exe()?;
+        use std::os::unix::process::CommandExt;
+        return Err(std::process::Command::new(exe).args(&args[1..]).exec());
+    }
+    Ok(())
 }
 
 fn screen(terminal: &Terminal<CrosstermBackend<Stdout>>) -> std::io::Result<Rect> {
@@ -108,27 +136,51 @@ fn run(terminal: &mut Terminal<CrosstermBackend<Stdout>>, state: &mut EditorStat
     }
     let mut double_shift = DoubleShift::default();
     let mut motion = Motion::from_env();
-    motion.start_splash(&ui::areas(screen(terminal)?, state));
+    motion.jack_in(&ui::areas(screen(terminal)?, state));
+    let mut last_click: Option<(Instant, (usize, usize), u8)> = None;
     let mut quitting = false;
+    let mut update_check = update::spawn_check();
 
     loop {
         let area = screen(terminal)?;
-        motion.tick(&ui::areas(area, state));
-        let splash = motion.splash_progress();
-        terminal.draw(|f| {
-            match splash {
-                Some(progress) => ui::render_splash(f, progress),
-                None => ui::render(f, state),
+        if let Some(rx) = &update_check {
+            match rx.try_recv() {
+                Ok((from, to)) => {
+                    state.offer_update(from, to);
+                    update_check = None;
+                    let areas = ui::areas(area, state);
+                    for cue in state.take_cues() {
+                        motion.cue(cue, &areas);
+                    }
+                }
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => update_check = None,
+                Err(std::sync::mpsc::TryRecvError::Empty) => {}
             }
+        }
+        let was_animating = motion.is_animating();
+        terminal.draw(|f| {
+            ui::render(f, state);
             let area = f.area();
             motion.render(f.buffer_mut(), area);
         })?;
+        if was_animating && !motion.is_animating() && !quitting {
+            continue;
+        }
 
         if quitting && !motion.is_animating() {
             return Ok(());
         }
-        if motion.is_animating() && !poll(Duration::from_millis(16))? {
-            continue;
+        let wait = if motion.is_animating() {
+            Some(Duration::from_millis(16))
+        } else if update_check.is_some() {
+            Some(Duration::from_millis(200))
+        } else {
+            None
+        };
+        if let Some(wait) = wait {
+            if !poll(wait)? {
+                continue;
+            }
         }
         let event = read()?;
         if quitting {
@@ -145,10 +197,7 @@ fn run(terminal: &mut Terminal<CrosstermBackend<Stdout>>, state: &mut EditorStat
                     keymap.dispatch_in(state.mode, &key_event)
                 };
                 match action {
-                    Some(action) => {
-                        motion.end_splash(&ui::areas(area, state));
-                        state.apply(action)
-                    }
+                    Some(action) => state.apply(action),
                     None => true,
                 }
             }
@@ -174,13 +223,40 @@ fn run(terminal: &mut Terminal<CrosstermBackend<Stdout>>, state: &mut EditorStat
                     None => true,
                 }
             }
+            Event::Mouse(mouse)
+                if matches!(state.mode, state::Mode::Normal)
+                    && matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left) | MouseEventKind::Drag(MouseButton::Left)) =>
+            {
+                let editor_area = ui::editor_rect_for(area, state.mode);
+                let doc = &state.tabs[state.active];
+                let below = mouse.row >= editor_area.y + editor_area.height;
+                let at = ui::mouse_to_doc(editor_area, mouse.column, mouse.row, doc).or_else(|| {
+                    (mouse.row >= editor_area.y && !below || mouse.kind != MouseEventKind::Down(MouseButton::Left))
+                        .then(|| (doc.lines.len() - 1, usize::MAX))
+                });
+                match (mouse.kind, at) {
+                    (MouseEventKind::Drag(_), Some((line, col))) => state.apply(Action::DragTo(line, col)),
+                    (_, Some((line, col))) if mouse.modifiers.contains(KeyModifiers::SHIFT) => {
+                        state.apply(Action::ShiftClickAt(line, col))
+                    }
+                    (_, Some((line, col))) => {
+                        let now = Instant::now();
+                        let clicks = match last_click {
+                            Some((t, (l, _), n)) if l == line && now.duration_since(t) < Duration::from_millis(400) => (n % 3) + 1,
+                            _ => 1,
+                        };
+                        last_click = Some((now, (line, col), clicks));
+                        state.apply(Action::ClickAt(line, col, clicks))
+                    }
+                    _ => true,
+                }
+            }
             Event::Mouse(mouse) if matches!(mouse.kind, MouseEventKind::ScrollUp | MouseEventKind::ScrollDown) => {
                 let lines = if mouse.kind == MouseEventKind::ScrollUp { -3 } else { 3 };
                 ui::scroll_view(area, state, lines);
                 true
             }
             Event::Paste(text) => {
-                motion.end_splash(&ui::areas(area, state));
                 let text = text.replace("\r\n", "\n").replace('\r', "\n");
                 state.apply(Action::InsertText(text))
             }

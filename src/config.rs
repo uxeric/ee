@@ -15,10 +15,11 @@ pub struct KeyBinding {
 
 impl KeyBinding {
     pub fn matches(&self, event: &KeyEvent) -> bool {
+        let shifted_char = matches!(event.code, KeyCode::Char(c) if c.is_uppercase());
         event.code == self.code
             && event.modifiers.contains(KeyModifiers::CONTROL) == self.ctrl
             && event.modifiers.contains(KeyModifiers::ALT) == self.alt
-            && event.modifiers.contains(KeyModifiers::SHIFT) == self.shift
+            && (event.modifiers.contains(KeyModifiers::SHIFT) || shifted_char) == self.shift
     }
 }
 
@@ -153,11 +154,13 @@ mod tests {
 
     #[test]
     fn config_file_sets_fallback_and_remaps_keys() {
-        let config = parse("alt_fallback = false\n[keys]\nsave_all = \"ctrl+g\"\nrename = \"shift+f6\"\nfind = \"Alt+Shift+Q\"\n").unwrap();
+        let config = parse("alt_fallback = false\n[keys]\nsave_all = \"ctrl+g\"\nrename = \"f7\"\nfind = \"Alt+Shift+Q\"\n").unwrap();
         let km = crate::keys::Keymap::new(config);
         assert_eq!(km.dispatch(&event(KeyCode::Char('g'), true, false, false)), Some(Action::SaveAll));
         assert_eq!(km.dispatch(&event(KeyCode::Char('Q'), false, true, true)), Some(Action::Find));
-        assert_eq!(km.dispatch(&event(KeyCode::F(6), false, false, true)), Some(Action::Rename));
+        assert_eq!(km.dispatch(&event(KeyCode::F(7), false, false, false)), Some(Action::Rename));
+        let kitty = KeyEvent::new(KeyCode::Char('Q'), KeyModifiers::ALT);
+        assert_eq!(km.dispatch(&kitty), Some(Action::Find), "kitty sends Alt+Shift+Q as 'Q' without the shift flag");
         assert_eq!(km.dispatch(&event(KeyCode::Char('w'), false, true, false)), None, "alt fallback off");
         assert_eq!(km.dispatch(&event(KeyCode::Char('s'), true, false, false)), Some(Action::SaveAll), "defaults still work");
     }
@@ -194,5 +197,54 @@ mod tests {
         let end = start + script[start..].find("\nEOF\n").expect("heredoc end");
         let config = parse(&script[start..end]).unwrap();
         assert!(config.fallback_enabled && config.remaps.is_empty());
+    }
+
+    #[test]
+    fn named_keys_parse_to_the_keys_they_name() {
+        let cases = [
+            ("enter", KeyCode::Enter),
+            ("esc", KeyCode::Esc),
+            ("tab", KeyCode::Tab),
+            ("backspace", KeyCode::Backspace),
+            ("delete", KeyCode::Delete),
+            ("space", KeyCode::Char(' ')),
+            ("pageup", KeyCode::PageUp),
+            ("pagedown", KeyCode::PageDown),
+            ("home", KeyCode::Home),
+            ("f12", KeyCode::F(12)),
+            ("ctrl+shift+w", KeyCode::Char('W')),
+        ];
+        for (spec, code) in cases {
+            assert_eq!(parse_key(spec).unwrap().code, code, "{}", spec);
+        }
+    }
+
+    #[test]
+    fn every_palette_entry_shows_the_key_that_runs_it() {
+        let km = crate::keys::Keymap::new(Config::default());
+        for &(name, label, keys) in crate::keys::PALETTE {
+            let expected = Action::from_name(name).unwrap_or_else(|| panic!("{} is not an action name", name));
+            if keys == "Shift Shift" {
+                continue;
+            }
+            let spec = if keys == "Shift+Tab" { "backtab".to_string() } else { keys.to_lowercase() };
+            let event = if spec == "backtab" {
+                KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT)
+            } else {
+                let b = parse_key(&spec).unwrap_or_else(|e| panic!("{}: {}", label, e));
+                let mut m = KeyModifiers::NONE;
+                if b.ctrl {
+                    m |= KeyModifiers::CONTROL;
+                }
+                if b.alt {
+                    m |= KeyModifiers::ALT;
+                }
+                if b.shift {
+                    m |= KeyModifiers::SHIFT;
+                }
+                KeyEvent::new(b.code, m)
+            };
+            assert_eq!(km.dispatch(&event), Some(expected), "{} is labelled {}", label, keys);
+        }
     }
 }

@@ -916,13 +916,21 @@ impl RenderedLine {
 mod tests {
     use super::*;
 
-    fn shown(text: &str) -> Vec<String> {
+    fn view(text: &str) -> MdView {
         let lines: Vec<String> = text.split('\n').map(|s| s.to_string()).collect();
         build(&lines)
+    }
+
+    fn text_of(line: &RenderedLine) -> String {
+        line.cells().iter().map(|c| c.0).collect()
+    }
+
+    fn shown(text: &str) -> Vec<String> {
+        view(text)
             .lines
             .iter()
             .map(|l| {
-                let mut s: String = l.cells().iter().map(|c| c.0).collect();
+                let mut s = text_of(l);
                 if let Some((c, _)) = l.fill {
                     s.push(c);
                 }
@@ -943,7 +951,6 @@ mod tests {
             ("> quoted", "▌ quoted"),
             ("---", "─"),
             ("```rust\nlet x = 1;\n```", "── rust ─\nlet x = 1;\n─"),
-            ("| a | b |\n|---|---|\n| 1 | 2 |", "│ a │ b │\n╞═══╪═══╡\n│ 1 │ 2 │"),
             ("\\*not em\\*", "*not em*"),
             ("[ref]: https://x.y", "[ref]: https://x.y"),
             ("> [!WARNING]\n> careful", "▌ ▲ Warning\n▌ careful"),
@@ -956,6 +963,12 @@ mod tests {
                 "<img alt=\"b\" src=\"https://img.shields.io/badge/built_with-Rust-ff2a6d?labelColor=0b0620\">",
                 " built with  Rust ",
             ),
+            (
+                "| a | num | note |\n|:-:|---|---|\n| xyz | 5 | **hi** |\n| q | 1,200 |\n| w | $3 | ok |",
+                "│  a  │   num │ note │\n╞═════╪═══════╪══════╡\n│ xyz │     5 │ hi   │\n│  q  │ 1,200 │      │\n│  w  │    $3 │ ok   │",
+            ),
+            ("x | y\n--|--\nlong | 2", "│ x    │ y │\n╞══════╪═══╡\n│ long │ 2 │"),
+            ("| key | v |\n|---|---:|\n| k | 42 |", "│ key │  v │\n╞═════╪════╡\n│ k   │ 42 │"),
         ];
         for (source, expected) in cases {
             let rows = source.split('\n').count();
@@ -966,64 +979,43 @@ mod tests {
     }
 
     #[test]
-    fn tables_align_columns_and_right_align_numbers() {
-        let source = "| a | num | note |\n|:-:|---|---|\n| xyz | 5 | **hi** |\n| q | 1,200 |\n| w | $3 | ok |";
-        assert_eq!(
-            shown(source),
-            [
-                "│  a  │   num │ note │",
-                "╞═════╪═══════╪══════╡",
-                "│ xyz │     5 │ hi   │",
-                "│  q  │ 1,200 │      │",
-                "│  w  │    $3 │ ok   │",
-            ]
-        );
-        assert_eq!(shown("x | y\n--|--\nlong | 2"), ["│ x    │ y │", "╞══════╪═══╡", "│ long │ 2 │"]);
-    }
-
-    #[test]
-    fn padded_table_cells_map_back_to_their_source() {
-        let lines: Vec<String> = ["| key | v |", "|---|---:|", "| k | 42 |"].iter().map(|s| s.to_string()).collect();
-        let view = build(&lines);
-        let row = &view.lines[2];
-        let shown: String = row.cells().iter().map(|c| c.0).collect();
-        assert_eq!(shown, "│ k   │ 42 │");
-        let len = lines[2].chars().count();
-        let source: Vec<char> = lines[2].chars().collect();
-        for (d, ch) in shown.chars().enumerate() {
-            if ch.is_alphanumeric() {
-                assert_eq!(source[row.display_to_source(d, len)], ch, "display col {}", d);
+    fn display_columns_map_back_to_the_characters_they_show() {
+        let cases = [("a *it* `c` [l](u)", 0), ("| key | v |\n|---|---:|\n| k | 42 |", 2), ("Press <kbd>Ctrl</kbd>+<b>S</b>", 0)];
+        for (source, row) in cases {
+            let line = &view(source).lines[row];
+            let raw: Vec<char> = source.split('\n').nth(row).unwrap().chars().collect();
+            for (d, ch) in text_of(line).chars().enumerate() {
+                if ch.is_alphanumeric() {
+                    assert_eq!(raw[line.display_to_source(d, raw.len())], ch, "display col {} of {:?}", d, source);
+                }
             }
+            assert_eq!(line.display_to_source(99, raw.len()), raw.len(), "past the end of {:?}", source);
         }
     }
 
     #[test]
-    fn display_columns_map_back_to_source_columns() {
-        let lines = vec!["a *it* `c` [l](u)".to_string()];
-        let view = build(&lines);
-        let line = &view.lines[0];
-        let len = lines[0].chars().count();
-        assert_eq!(line.display_to_source(0, len), 0);
-        assert_eq!(line.display_to_source(2, len), 3, "'i' of *it*");
-        assert_eq!(line.display_to_source(5, len), 8, "'c' inside the backticks");
-        assert_eq!(line.display_to_source(7, len), 12, "'l' link text");
-        assert_eq!(line.display_to_source(99, len), len, "past the end");
-    }
-
-
-    fn view(text: &str) -> MdView {
-        let lines: Vec<String> = text.split('\n').map(|s| s.to_string()).collect();
-        build(&lines)
+    fn text_is_coloured_by_what_it_is() {
+        let code = "```sh\necho \"hi\" # note\n```\n```diff\n+ add\n- drop\n```";
+        let cases = [
+            ("> [!TIP]\n> go", 1, '▌', NEON, "tip bar"),
+            (code, 1, 'e', TEXT, "command"),
+            (code, 1, 'i', AMBER, "string"),
+            (code, 1, 'n', GHOST, "comment"),
+            (code, 4, 'a', ICE, "diff addition"),
+            (code, 5, 'd', HOT, "diff removal"),
+        ];
+        for (source, row, ch, colour, what) in cases {
+            let fg = view(source).lines[row].cells().into_iter().find(|c| c.0 == ch).unwrap().1.fg;
+            assert_eq!(fg, Some(colour), "{}", what);
+        }
     }
 
     #[test]
-    fn alerts_colour_their_bar_and_badges_use_their_colours() {
-        let v = view("> [!TIP]\n> go");
-        assert_eq!(v.lines[1].cells()[0].1.fg, Some(NEON));
+    fn badges_take_their_colours_from_the_url() {
         let v = view("<img alt=\"b\" src=\"https://img.shields.io/badge/ok-yes-ff2a6d?labelColor=0b0620\">");
         let cells = v.lines[0].cells();
-        assert_eq!((cells[1].0, cells[1].1.bg), ('o', Some(VOID)));
-        assert_eq!((cells[5].0, cells[5].1.bg), ('y', Some(HOT)));
+        assert_eq!((cells[1].0, cells[1].1.bg), ('o', Some(Color::Rgb(0x0b, 0x06, 0x20))), "labelColor");
+        assert_eq!((cells[5].0, cells[5].1.bg), ('y', Some(Color::Rgb(0xff, 0x2a, 0x6d))), "message colour");
     }
 
     #[test]
@@ -1034,21 +1026,10 @@ mod tests {
     }
 
     #[test]
-    fn code_blocks_are_highlighted_by_language() {
-        let v = view("```sh\necho \"hi\" # note\n```\n```diff\n+ add\n- drop\n```");
-        let style_of = |line: usize, ch: char| v.lines[line].cells().into_iter().find(|c| c.0 == ch).unwrap().1.fg;
-        assert_eq!(style_of(1, 'e'), Some(TEXT));
-        assert_eq!(style_of(1, 'i'), Some(AMBER), "string");
-        assert_eq!(style_of(1, 'n'), Some(GHOST), "comment");
-        assert_eq!(style_of(4, 'a'), Some(ICE), "diff addition");
-        assert_eq!(style_of(5, 'd'), Some(HOT), "diff removal");
-    }
-
-    #[test]
     fn links_are_attached_to_their_text_and_headings_get_anchors() {
         let v = view("[brief](https://x.y) and <a href=\"#faq\">faq</a> <kbd>[k](#keys)</kbd>\n\n## The FAQ!");
         let line = &v.lines[0];
-        let shown: String = line.cells().iter().map(|c| c.0).collect();
+        let shown = text_of(line);
         let col = |needle: &str| shown.find(needle).map(|b| shown[..b].chars().count()).unwrap();
         assert_eq!(line.link_at(col("brief")), Some("https://x.y"));
         assert_eq!(line.link_at(col("faq")), Some("#faq"));

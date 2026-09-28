@@ -9,19 +9,26 @@ const ENTER_DELAY: Duration = Duration::from_millis(60);
 
 pub struct Herdr {
     socket: String,
-    pane: String,
+    pane: Option<String>,
 }
 
 impl Herdr {
     pub fn from_env() -> Result<Self, String> {
-        let not_inside = || "not running inside herdr".to_string();
-        if cfg!(test) || std::env::var("HERDR_ENV").ok().as_deref() != Some("1") {
-            return Err(not_inside());
+        if cfg!(test) {
+            return Err("herdr is disabled in tests".to_string());
         }
-        Ok(Self {
-            socket: std::env::var("HERDR_SOCKET_PATH").map_err(|_| not_inside())?,
-            pane: std::env::var("HERDR_PANE_ID").map_err(|_| not_inside())?,
-        })
+        let inside = std::env::var("HERDR_ENV").ok().as_deref() == Some("1");
+        let pane = std::env::var("HERDR_PANE_ID").ok().filter(|_| inside);
+        let socket = std::env::var("HERDR_SOCKET_PATH").ok().or_else(|| {
+            let config = std::env::var_os("XDG_CONFIG_HOME")
+                .map(std::path::PathBuf::from)
+                .or_else(|| std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join(".config")))?;
+            Some(config.join("herdr").join("herdr.sock").to_string_lossy().to_string())
+        });
+        match socket {
+            Some(socket) if inside || std::path::Path::new(&socket).exists() => Ok(Self { socket, pane }),
+            _ => Err("herdr is not running".to_string()),
+        }
     }
 
     fn call(&self, method: &str, params: Value) -> Result<Value, String> {
@@ -45,7 +52,11 @@ impl Herdr {
     }
 
     fn target(&self) -> Result<Value, String> {
-        let me = self.call("pane.get", json!({ "pane_id": self.pane }))?["pane"].clone();
+        let Some(pane) = &self.pane else {
+            let focused = self.call("pane.current", json!({}))?["pane"].clone();
+            return if focused["pane_id"].is_string() { Ok(focused) } else { Err("herdr has no focused pane".to_string()) };
+        };
+        let me = self.call("pane.get", json!({ "pane_id": pane }))?["pane"].clone();
         let panes = self.call("pane.list", json!({ "workspace_id": me["workspace_id"] }))?["panes"].clone();
         let others: Vec<Value> = panes
             .as_array()
@@ -120,6 +131,7 @@ mod tests {
                 let req: Value = serde_json::from_str(&line).unwrap();
                 let result = match req["method"].as_str().unwrap() {
                     "pane.get" => json!({ "type": "pane_info", "pane": panes[0] }),
+                    "pane.current" => json!({ "type": "pane_current", "pane": panes.iter().find(|p| p["focused"] == true).cloned().unwrap_or(Value::Null) }),
                     "pane.list" => json!({ "type": "pane_list", "panes": panes }),
                     "pane.neighbor" if req["params"]["direction"] == "left" => {
                         json!({ "type": "pane_neighbor", "neighbor": { "neighbor_pane_id": neighbor } })
@@ -131,7 +143,7 @@ mod tests {
                 writeln!(&stream, "{}", json!({ "id": req["id"], "result": result })).unwrap();
             }
         });
-        (Herdr { socket: path.to_string_lossy().to_string(), pane: "w1:p1".to_string() }, seen)
+        (Herdr { socket: path.to_string_lossy().to_string(), pane: Some("w1:p1".to_string()) }, seen)
     }
 
     fn rand_suffix() -> u128 {
@@ -149,6 +161,8 @@ mod tests {
         assert_eq!(herdr.send("ls\npwd"), Ok("w1:p2".to_string()));
         assert_eq!(methods(&seen), ["pane.get", "pane.list", "pane.send_input", "pane.send_keys"]);
         let log = seen.lock().unwrap();
+        assert_eq!(log[0]["params"], json!({ "pane_id": "w1:p1" }));
+        assert_eq!(log[1]["params"], json!({ "workspace_id": "w1" }));
         assert_eq!(log[2]["params"], json!({ "pane_id": "w1:p2", "text": "ls\npwd" }));
         assert_eq!(log[3]["params"], json!({ "pane_id": "w1:p2", "keys": ["enter"] }));
     }
@@ -163,9 +177,29 @@ mod tests {
         let (herdr, seen) = fake_herdr(panes, Some("w1:p3"));
         assert_eq!(herdr.send("fix it"), Ok("claude".to_string()));
         let log = seen.lock().unwrap();
+        assert!(log.iter().filter(|r| r["method"] == "pane.neighbor").all(|r| r["params"]["pane_id"] == "w1:p1"));
         let prompt = log.iter().find(|r| r["method"] == "agent.prompt").unwrap();
         assert_eq!(prompt["params"], json!({ "target": "w1:p3", "text": "fix it" }));
         assert!(log.iter().all(|r| r["method"] != "pane.send_input"));
+    }
+
+    #[test]
+    fn outside_herdr_it_sends_to_the_focused_pane() {
+        let mut focused = pane("w2:p4", "t9", None);
+        focused["focused"] = json!(true);
+        let (mut herdr, seen) = fake_herdr(vec![pane("w1:p1", "t1", None), focused], None);
+        herdr.pane = None;
+        assert_eq!(herdr.send("make test"), Ok("w2:p4".to_string()));
+        assert_eq!(methods(&seen), ["pane.current", "pane.send_input", "pane.send_keys"]);
+        assert_eq!(seen.lock().unwrap()[1]["params"], json!({ "pane_id": "w2:p4", "text": "make test" }));
+    }
+
+    #[test]
+    fn outside_herdr_with_nothing_focused_sends_nothing() {
+        let (mut herdr, seen) = fake_herdr(vec![pane("w1:p1", "t1", None)], None);
+        herdr.pane = None;
+        assert_eq!(herdr.send("ls"), Err("herdr has no focused pane".to_string()));
+        assert_eq!(methods(&seen), ["pane.current"]);
     }
 
     #[test]
@@ -173,6 +207,6 @@ mod tests {
         let (herdr, seen) = fake_herdr(vec![pane("w1:p1", "t1", None), pane("w1:p9", "t2", None)], None);
         assert_eq!(herdr.send("ls"), Err("no other pane in this tab".to_string()));
         assert_eq!(methods(&seen), ["pane.get", "pane.list"]);
-        assert!(Herdr::from_env().is_err(), "tests never reach the real herdr");
+        assert_eq!(Herdr::from_env().err().as_deref(), Some("herdr is disabled in tests"));
     }
 }

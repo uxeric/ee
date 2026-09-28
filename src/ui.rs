@@ -6,7 +6,8 @@ use ratatui::Frame;
 
 use crate::document::Document;
 use crate::motion::Areas;
-use crate::state::{Alert, EditorState, Mode, PromptKind};
+use crate::state::{Alert, EditorState, Mode, PickerKind, PromptKind};
+use ratatui::widgets::{Block, BorderType, Clear};
 use crate::theme;
 
 pub fn render(frame: &mut Frame, state: &EditorState) {
@@ -35,6 +36,84 @@ pub fn render(frame: &mut Frame, state: &EditorState) {
         }
     }
     render_status_bar(frame, state, status_bar);
+    if matches!(state.mode, Mode::Picker) {
+        render_picker(frame, state, area);
+    }
+    render_update_modal(frame, state, area);
+}
+
+pub fn popup_rect(area: Rect, state: &EditorState) -> Option<Rect> {
+    let picker = state.picker.as_ref()?;
+    let editor = editor_rect_for(area, state.mode);
+    let width = area.width.saturating_sub(4).min(84);
+    let rows = (picker.shown.len().max(1) as u16 + 3).min(18).min(editor.height.max(3));
+    Some(Rect::new(area.x + (area.width - width) / 2, editor.y + editor.height.min(1), width, rows))
+}
+
+fn render_picker(frame: &mut Frame, state: &EditorState, area: Rect) {
+    let (Some(picker), Some(rect)) = (state.picker.as_ref(), popup_rect(area, state)) else {
+        return;
+    };
+    let title = match picker.kind {
+        PickerKind::Actions => " actions ",
+        PickerKind::Structure => " file structure ",
+        PickerKind::Files => " open or create a file ",
+    };
+    let block = Block::bordered()
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(theme::ICE))
+        .title(Span::styled(title, Style::default().fg(theme::HOT).add_modifier(Modifier::BOLD)))
+        .style(Style::default().bg(theme::VOID));
+    let inner = block.inner(rect);
+    frame.render_widget(Clear, rect);
+    frame.render_widget(block, rect);
+    if inner.height == 0 {
+        return;
+    }
+    let input = Line::from(vec![
+        Span::styled("▸ ", Style::default().fg(theme::HOT)),
+        Span::styled(picker.input.clone(), theme::text()),
+        Span::styled(" ", theme::caret()),
+    ]);
+    frame.render_widget(Paragraph::new(input), Rect::new(inner.x, inner.y, inner.width, 1));
+    let count = format!("{}/{} ", picker.shown.len(), picker.total());
+    render_right(frame, Rect::new(inner.x, inner.y, inner.width, 1), (picker.input.chars().count() + 4) as u16, &count, theme::dim());
+    let visible = inner.height.saturating_sub(1) as usize;
+    if picker.shown.is_empty() {
+        let hint = match picker.kind {
+            PickerKind::Files if !picker.input.trim().is_empty() => format!("Enter opens {}, creating it if it doesn't exist", picker.input.trim()),
+            _ => "nothing matches".to_string(),
+        };
+        if visible > 0 {
+            frame.render_widget(Paragraph::new(Span::styled(hint, theme::dim())), Rect::new(inner.x + 2, inner.y + 1, inner.width.saturating_sub(2), 1));
+        }
+        return;
+    }
+    let start = picker.selected.saturating_sub(visible.saturating_sub(1));
+    for (row, (index, hits)) in picker.shown.iter().enumerate().skip(start).take(visible) {
+        let y = inner.y + 1 + (row - start) as u16;
+        let selected = row == picker.selected;
+        let item = picker.item(*index);
+        let base = if selected { Style::default().bg(theme::SELECTION) } else { Style::default() };
+        let mut spans = vec![Span::styled(if selected { "▌ " } else { "  " }, base.fg(theme::HOT))];
+        for (i, c) in item.label.chars().enumerate() {
+            let style = if hits.contains(&i) {
+                base.fg(theme::HOT).add_modifier(Modifier::BOLD)
+            } else {
+                base.fg(theme::TEXT)
+            };
+            spans.push(Span::styled(c.to_string(), style));
+        }
+        let row_rect = Rect::new(inner.x, y, inner.width, 1);
+        if selected {
+            frame.buffer_mut().set_style(row_rect, base);
+        }
+        let used = Line::from(spans.clone()).width() as u16;
+        frame.render_widget(Paragraph::new(Line::from(spans)), row_rect);
+        if !item.detail.is_empty() {
+            render_right(frame, row_rect, used, &format!("{} ", item.detail), base.fg(theme::GHOST));
+        }
+    }
 }
 
 pub fn areas(area: Rect, state: &EditorState) -> Areas {
@@ -55,12 +134,30 @@ pub fn areas(area: Rect, state: &EditorState) -> Areas {
         let width = (ec - sc).min(right - x);
         Some(Rect::new(x as u16, editor.y + (sl - top) as u16, width as u16, 1))
     });
+    let height = editor.height as usize;
+    let top = visible_top(doc, height);
+    let gutter = doc.lines.len().to_string().len() + 1;
+    let mut lines: Vec<usize> = doc.extra_carets.iter().map(|&(l, _)| l).collect();
+    lines.push(doc.cursor.0);
+    lines.sort();
+    lines.dedup();
+    let caret_rows = lines
+        .into_iter()
+        .filter(|&l| l >= top && l < top + height)
+        .map(|l| {
+            let width = (doc.lines[l].chars().count().max(1) as u16).min(editor.width.saturating_sub(gutter as u16));
+            Rect::new(editor.x + gutter as u16, editor.y + (l - top) as u16, width, 1)
+        })
+        .collect();
     Areas {
         screen: area,
         editor,
         bar,
         status,
         selection,
+        caret_rows,
+        popup: popup_rect(area, state),
+        modal: modal_rect(area, state),
     }
 }
 
@@ -266,7 +363,7 @@ fn in_selection(doc: &Document, line_idx: usize, col: usize) -> bool {
 
 fn layout(area: Rect, mode: Mode) -> (Rect, Rect, Option<Rect>, Rect) {
     match mode {
-        Mode::Normal => {
+        Mode::Normal | Mode::Picker => {
             let rects = Layout::vertical([
                 Constraint::Length(1),
                 Constraint::Min(0),
@@ -415,8 +512,8 @@ fn render_right(frame: &mut Frame, area: Rect, used: u16, text: &str, style: Sty
 fn render_prompt(frame: &mut Frame, kind: PromptKind, input: &str, area: Rect) {
     let mut spans: Vec<Span> = Vec::new();
     let label = match kind {
-        PromptKind::Open => " open ",
         PromptKind::Rename => " rename to ",
+        PromptKind::GoToLine => " go to line ",
     };
     input_spans(&mut spans, label, input, true);
     let used = Line::from(spans.clone()).width() as u16;
@@ -433,6 +530,7 @@ fn render_status_bar(frame: &mut Frame, state: &EditorState, area: Rect) {
     };
     let mode_color = match state.mode {
         Mode::Normal => theme::ICE,
+        Mode::Picker => theme::HOT,
         Mode::Find => theme::HOT,
         Mode::Replace => theme::AMBER,
         Mode::Prompt(_) => theme::ICE,
@@ -482,8 +580,6 @@ fn selection_length(lines: &[String], start: (usize, usize), end: (usize, usize)
 
 const LOGO: [&str; 4] = ["▄▀▀▀▀▄  ▄▀▀▀▀▄", "█▄▄▄▄█  █▄▄▄▄█", "█       █     ", "▀▄▄▄▄▀  ▀▄▄▄▄▀"];
 
-const BOOT_LOG: [&str; 3] = ["mounting buffers", "calibrating neon", "ignoring your opinions"];
-
 fn lerp(a: Color, b: Color, t: f32) -> Color {
     let (Color::Rgb(ar, ag, ab), Color::Rgb(br, bg, bb)) = (a, b) else {
         return a;
@@ -492,35 +588,43 @@ fn lerp(a: Color, b: Color, t: f32) -> Color {
     Color::Rgb(mix(ar, br), mix(ag, bg), mix(ab, bb))
 }
 
-pub fn render_splash(frame: &mut Frame, progress: f32) {
-    let area = frame.area();
-    let log_width = 32;
-    let mut lines: Vec<Line> = Vec::new();
-    for (i, row) in LOGO.iter().enumerate() {
-        let doubled: String = row.chars().flat_map(|c| [c, c]).collect();
-        let color = lerp(theme::HOT, theme::ICE, i as f32 / (LOGO.len() - 1) as f32);
-        lines.push(Line::styled(doubled, Style::default().fg(color)));
-    }
+pub fn modal_rect(area: Rect, state: &EditorState) -> Option<Rect> {
+    state.update.as_ref()?;
+    let width = 50.min(area.width);
+    let height = 12.min(area.height);
+    Some(Rect::new(area.x + (area.width - width) / 2, area.y + (area.height - height) / 2, width, height))
+}
+
+fn render_update_modal(frame: &mut Frame, state: &EditorState, area: Rect) {
+    let (Some((from, to)), Some(rect)) = (state.update.as_ref(), modal_rect(area, state)) else {
+        return;
+    };
+    let block = Block::bordered()
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(theme::ICE))
+        .style(Style::default().bg(theme::VOID));
+    let inner = block.inner(rect);
+    frame.render_widget(Clear, rect);
+    frame.render_widget(block, rect);
+    let key = |k: &str| Span::styled(format!(" {} ", k), Style::default().bg(theme::KEYCAP).fg(theme::TEXT).add_modifier(Modifier::BOLD));
+    let mut lines: Vec<Line> = LOGO
+        .iter()
+        .enumerate()
+        .map(|(i, row)| Line::styled(*row, Style::default().fg(lerp(theme::HOT, theme::ICE, i as f32 / (LOGO.len() - 1) as f32))))
+        .collect();
     lines.push(Line::default());
-    lines.push(Line::styled("eric's own editor", theme::text()));
+    lines.push(Line::styled("update available", Style::default().fg(theme::ICE).add_modifier(Modifier::BOLD)));
+    lines.push(Line::from(vec![
+        Span::styled(from.clone(), theme::dim()),
+        Span::styled("  →  ", Style::default().fg(theme::HOT)),
+        Span::styled(to.clone(), theme::text().add_modifier(Modifier::BOLD)),
+    ]));
     lines.push(Line::default());
-    let shown = ((progress * (BOOT_LOG.len() + 1) as f32) as usize).min(BOOT_LOG.len());
-    for (i, entry) in BOOT_LOG.iter().enumerate() {
-        if i >= shown {
-            lines.push(Line::default());
-            continue;
-        }
-        let dots = ".".repeat(log_width - 3 - entry.len());
-        lines.push(Line::from(vec![
-            Span::styled("› ", Style::default().fg(theme::HOT)),
-            Span::styled(format!("{} {} ", entry, dots), theme::dim()),
-            Span::styled("ok", Style::default().fg(theme::ICE).add_modifier(Modifier::BOLD)),
-        ]));
+    if state.has_unsaved() {
+        lines.push(Line::styled("save your changes first (Ctrl+S)", Style::default().fg(theme::AMBER)));
     }
-    let height = lines.len() as u16;
-    let top = area.y + area.height.saturating_sub(height) / 2;
-    let body = Rect::new(area.x, top, area.width, height.min(area.height));
-    frame.render_widget(Paragraph::new(lines).alignment(Alignment::Center), body);
+    lines.push(Line::from(vec![key("Enter"), Span::styled(" restart to update    ", theme::text()), key("Esc"), Span::styled(" keep working", theme::text())]));
+    frame.render_widget(Paragraph::new(lines).alignment(Alignment::Center), inner);
 }
 
 #[cfg(test)]
@@ -574,12 +678,20 @@ mod tests {
     #[test]
     fn renders_at_any_terminal_size_in_every_mode() {
         let mut state = EditorState::new();
-        state.tabs[0] = Document::with_content("t", "alpha beta\nbeta\n");
+        state.tabs[0] = Document::with_content("t.md", "# alpha beta\n## beta\n");
         state.tabs[0].cursor = (1, 2);
-        for mode in [Mode::Normal, Mode::Find, Mode::Replace, Mode::Prompt(PromptKind::Open)] {
-            state.mode = mode;
+        for mode in [Mode::Normal, Mode::Find, Mode::Replace, Mode::Prompt(PromptKind::GoToLine), Mode::Picker] {
+            state.mode = Mode::Normal;
+            state.picker = None;
+            state.update = None;
+            if matches!(mode, Mode::Picker) {
+                state.apply(crate::keys::Action::FileStructure);
+                state.offer_update("abc1234".into(), "def5678".into());
+            } else {
+                state.mode = mode;
+            }
             state.find.query = "beta".to_string();
-            for (w, h) in [(10, 0), (1, 1), (20, 3), (80, 24), (120, 40), (200, 50)] {
+            for (w, h) in [(10, 0), (0, 10), (1, 1), (4, 2), (5, 3), (20, 3), (20, 4), (80, 24), (120, 40), (200, 50)] {
                 let mut t = Terminal::new(TestBackend::new(w, h)).unwrap();
                 t.draw(|f| render(f, &state)).unwrap();
             }
@@ -590,7 +702,7 @@ mod tests {
     fn editor_fills_every_row_not_used_by_a_bar() {
         let mut state = EditorState::new();
         state.tabs[0] = Document::with_content("t", "x");
-        for (mode, bars) in [(Mode::Normal, 2), (Mode::Find, 3), (Mode::Prompt(PromptKind::Open), 3)] {
+        for (mode, bars) in [(Mode::Normal, 2), (Mode::Find, 3), (Mode::Prompt(PromptKind::GoToLine), 3)] {
             state.mode = mode;
             for h in [10u16, 24, 50] {
                 let editor = editor_rect_for(Rect::new(0, 0, 80, h), mode);
@@ -716,10 +828,99 @@ mod tests {
         t.draw(|f| render(f, &state)).unwrap();
         let row: String = render_rows(t.backend().buffer())[editor.y as usize + 2].clone();
         let x = row.find("go").unwrap() as u16;
-        assert!(x > 15, "the link is centred, not at the left edge: {:?}", row);
+        assert_eq!(x, 2 + (38 - 2) / 2, "centred in the text area: {:?}", row);
         let doc = &state.tabs[0];
         assert_eq!(link_at(editor, x, editor.y + 2, doc).as_deref(), Some("#here"));
         assert_eq!(link_at(editor, 3, editor.y + 2, doc), None, "the padding is not a link");
         assert_eq!(mouse_to_doc(editor, x, editor.y + 2, doc), Some((2, 1)), "lands on the g in [go](#here)");
+    }
+
+    fn draw(state: &EditorState, w: u16, h: u16) -> Terminal<TestBackend> {
+        let mut t = Terminal::new(TestBackend::new(w, h)).unwrap();
+        t.draw(|f| render(f, state)).unwrap();
+        t
+    }
+
+    #[test]
+    fn the_file_structure_popup_lists_headings_and_scrolls_to_the_selection() {
+        let headings: Vec<String> = (1..=30).map(|n| format!("# H{}\n", n)).collect();
+        let mut state = EditorState::new();
+        state.tabs[0] = Document::with_content("t.md", &headings.concat());
+        state.apply(crate::keys::Action::FileStructure);
+        let rows = render_rows(draw(&state, 80, 24).backend().buffer());
+        assert!(rows.iter().any(|r| r.contains(" file structure ")));
+        assert!(rows.iter().any(|r| r.contains("30/30")));
+        let first = rows.iter().position(|r| r.contains("▌ H1 ")).expect("the first heading is selected");
+        assert!(rows[first].contains("line 1"));
+        state.picker.as_mut().unwrap().selected = 25;
+        let rows = render_rows(draw(&state, 80, 24).backend().buffer());
+        let selected = rows.iter().position(|r| r.contains("▌ H26")).expect("the selection scrolls into view");
+        assert!(!rows[selected + 1].contains(" H27"), "it sits on the last visible row");
+        assert!(!rows.iter().any(|r| r.contains(" H11 ")), "rows above the window scrolled away");
+    }
+
+    #[test]
+    fn the_update_modal_shows_the_versions_and_warns_about_unsaved_work() {
+        let area = Rect::new(0, 0, 80, 24);
+        let mut state = EditorState::new();
+        assert_eq!(modal_rect(area, &state), None);
+        state.offer_update("abc1234".into(), "def5678".into());
+        assert_eq!(modal_rect(area, &state), Some(Rect::new(15, 6, 50, 12)));
+        let rows = render_rows(draw(&state, 80, 24).backend().buffer());
+        assert!(rows.iter().any(|r| r.contains("abc1234  →  def5678")));
+        assert!(!rows.iter().any(|r| r.contains("save your changes first")));
+        state.tabs[0].dirty = true;
+        let rows = render_rows(draw(&state, 80, 24).backend().buffer());
+        assert!(rows.iter().any(|r| r.contains("save your changes first")));
+    }
+
+    #[test]
+    fn effect_areas_match_what_is_on_screen() {
+        let area = Rect::new(0, 0, 40, 10);
+        let mut state = EditorState::new();
+        state.tabs[0] = Document::with_content("t", "hello world\nxy\nthird line");
+        state.tabs[0].cursor = (2, 0);
+        state.tabs[0].extra_carets = vec![(0, 8)];
+        state.tabs[0].selection = Some(((0, 2), (0, 5)));
+        let a = areas(area, &state);
+        assert_eq!(a.caret_rows, vec![Rect::new(2, 1, 11, 1), Rect::new(2, 3, 10, 1)]);
+        assert_eq!(a.selection, Some(Rect::new(4, 1, 3, 1)));
+        let t = draw(&state, 40, 10);
+        let buf = t.backend().buffer();
+        for x in 4..7 {
+            assert_eq!(buf.cell((x, 1)).unwrap().bg, theme::SELECTION, "the selection rect covers selected cells");
+        }
+        assert_eq!((a.popup, a.modal), (None, None));
+        state.offer_update("a".into(), "b".into());
+        assert_eq!(areas(area, &state).modal, modal_rect(area, &state));
+    }
+
+    #[test]
+    fn find_hints_never_cover_the_query_and_matches_are_highlighted() {
+        let mut state = EditorState::new();
+        state.tabs[0] = Document::with_content("t", "beta alpha beta");
+        state.apply(crate::keys::Action::Find);
+        for c in "beta".chars() {
+            state.apply(crate::keys::Action::InsertChar(c));
+        }
+        let t = draw(&state, 60, 8);
+        let buf = t.backend().buffer();
+        assert_eq!(buf.cell((13, 1)).unwrap().bg, theme::MATCH, "the second beta is highlighted");
+        assert_ne!(buf.cell((8, 1)).unwrap().bg, theme::MATCH, "alpha is not");
+
+        state.find.query = "a-very-long-query".to_string();
+        let rows = render_rows(draw(&state, 60, 8).backend().buffer());
+        assert!(rows[6].contains("a-very-long-query"), "the hint gives way: {:?}", rows[6]);
+
+        let mut state = EditorState::new();
+        state.tabs[0] = Document::with_content("t.md", "beta\n\nalpha **beta**");
+        state.apply(crate::keys::Action::Find);
+        for c in "beta".chars() {
+            state.apply(crate::keys::Action::InsertChar(c));
+        }
+        let t = draw(&state, 60, 8);
+        let row: String = render_rows(t.backend().buffer())[3].clone();
+        let x = row.find("beta").unwrap() as u16;
+        assert_eq!(t.backend().buffer().cell((x, 3)).unwrap().bg, theme::MATCH, "matches show on rendered markdown too");
     }
 }

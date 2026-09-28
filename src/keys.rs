@@ -17,9 +17,7 @@ pub enum Action {
     Down,
     Home,
     End,
-    #[allow(dead_code)]
     BeginningOfFile,
-    #[allow(dead_code)]
     EndOfFile,
     BeginningOfLine,
     EndOfLine,
@@ -57,11 +55,31 @@ pub enum Action {
     SelectEnd,
     InsertText(String),
     SendToPane,
+    StartNewLine,
+    WordLeft,
+    WordRight,
+    SelectWordLeft,
+    SelectWordRight,
+    SelectFileStart,
+    SelectFileEnd,
+    ExtendSelection,
+    ShrinkSelection,
+    Indent,
+    Unindent,
+    GoToLine,
+    NavigateBack,
+    NavigateForward,
+    SelectAll,
+    ToggleCase,
+    ToggleComment,
+    FindAction,
+    FileStructure,
+    LastEditLocation,
+    StartNewLineAbove,
+    ClickAt(usize, usize, u8),
+    DragTo(usize, usize),
+    ShiftClickAt(usize, usize),
     FollowLink(String),
-    #[allow(dead_code)]
-    CodeCompletion,
-    #[allow(dead_code)]
-    LineCompletion,
     AddCaretAt(usize, usize),
     ClearExtraCaret,
     JoinLines,
@@ -73,8 +91,6 @@ pub enum Action {
     CloseTab,
     GoToDeclaration,
     QuickDefinition,
-    #[allow(dead_code)]
-    QuickDocumentation,
 }
 
 const DOUBLE_SHIFT_WINDOW: Duration = Duration::from_millis(400);
@@ -113,6 +129,55 @@ impl DoubleShift {
         false
     }
 }
+
+pub const PALETTE: &[(&str, &str, &str)] = &[
+    ("save_all", "Save all", "Ctrl+S"),
+    ("open_file", "Open or create a file", "Ctrl+N"),
+    ("rename", "Rename file / save as", "Shift+F6"),
+    ("close_tab", "Close tab", "Ctrl+F4"),
+    ("next_tab", "Next tab", "Ctrl+]"),
+    ("previous_tab", "Previous tab", "Ctrl+["),
+    ("find", "Find", "Ctrl+F"),
+    ("find_in_files", "Find in all open files", "Shift Shift"),
+    ("replace", "Replace", "Ctrl+R"),
+    ("find_next", "Next match", "F3"),
+    ("find_previous", "Previous match", "Shift+F3"),
+    ("go_to_line", "Go to line", "Ctrl+G"),
+    ("file_structure", "File structure (headings)", "Ctrl+F12"),
+    ("navigate_back", "Back", "Ctrl+Alt+Left"),
+    ("navigate_forward", "Forward", "Ctrl+Alt+Right"),
+    ("last_edit_location", "Last edit location", "Ctrl+Shift+Backspace"),
+    ("select_all", "Select all", "Ctrl+A"),
+    ("extend_selection", "Extend selection", "Ctrl+W"),
+    ("shrink_selection", "Shrink selection", "Ctrl+Shift+W"),
+    ("select_all_occurrences", "Select all occurrences", "Alt+Shift+J"),
+    ("add_caret_up", "Add caret above", "Ctrl+Up"),
+    ("add_caret_down", "Add caret below", "Ctrl+Down"),
+    ("clear_extra_carets", "Back to one caret", "Esc"),
+    ("copy", "Copy", "Ctrl+C"),
+    ("cut", "Cut", "Ctrl+X"),
+    ("paste", "Paste", "Ctrl+V"),
+    ("undo", "Undo", "Ctrl+Z"),
+    ("redo", "Redo", "Alt+Y"),
+    ("duplicate_line", "Duplicate line", "Ctrl+D"),
+    ("delete_line", "Delete line", "Ctrl+Y"),
+    ("move_line_up", "Move line up", "Alt+Shift+Up"),
+    ("move_line_down", "Move line down", "Alt+Shift+Down"),
+    ("join_lines", "Join lines", "Ctrl+J"),
+    ("reformat", "Reformat", "Ctrl+Alt+L"),
+    ("toggle_case", "Toggle case", "Ctrl+Shift+U"),
+    ("toggle_comment", "Toggle line comment", "Ctrl+/"),
+    ("indent", "Indent", "Tab"),
+    ("unindent", "Unindent", "Shift+Tab"),
+    ("start_new_line", "Start new line below", "Shift+Enter"),
+    ("start_new_line_above", "Start new line above", "Ctrl+Alt+Enter"),
+    ("word_left", "Previous word", "Ctrl+Left"),
+    ("word_right", "Next word", "Ctrl+Right"),
+    ("beginning_of_file", "Start of file", "Ctrl+Home"),
+    ("end_of_file", "End of file", "Ctrl+End"),
+    ("send_to_pane", "Send lines to herdr", "Alt+Shift+E"),
+    ("quit", "Quit", "Ctrl+Q"),
+];
 
 impl Action {
     pub fn from_name(name: &str) -> Option<Action> {
@@ -167,6 +232,27 @@ impl Action {
             "next_tab" => Action::NextTab,
             "previous_tab" => Action::PreviousTab,
             "close_tab" => Action::CloseTab,
+            "start_new_line" => Action::StartNewLine,
+            "word_left" => Action::WordLeft,
+            "word_right" => Action::WordRight,
+            "select_word_left" => Action::SelectWordLeft,
+            "select_word_right" => Action::SelectWordRight,
+            "select_to_file_start" => Action::SelectFileStart,
+            "select_to_file_end" => Action::SelectFileEnd,
+            "extend_selection" => Action::ExtendSelection,
+            "shrink_selection" => Action::ShrinkSelection,
+            "indent" => Action::Indent,
+            "unindent" => Action::Unindent,
+            "go_to_line" => Action::GoToLine,
+            "navigate_back" => Action::NavigateBack,
+            "navigate_forward" => Action::NavigateForward,
+            "select_all" => Action::SelectAll,
+            "toggle_case" => Action::ToggleCase,
+            "toggle_comment" => Action::ToggleComment,
+            "find_action" => Action::FindAction,
+            "file_structure" => Action::FileStructure,
+            "last_edit_location" => Action::LastEditLocation,
+            "start_new_line_above" => Action::StartNewLineAbove,
             _ => return None,
         })
     }
@@ -186,22 +272,27 @@ impl Keymap {
     /// live here. Conflicts (f/d/r) keep their primary (non-shift) action.
     fn ctrl_char_action(c: char) -> Option<Action> {
         match c {
-            'a' => Some(Action::BeginningOfLine),
+            'a' => Some(Action::SelectAll),
+            'A' => Some(Action::FindAction),
             'b' => Some(Action::GoToDeclaration),
             'c' => Some(Action::Copy),
             'd' => Some(Action::DuplicateLine),
             'e' => Some(Action::EndOfLine),
             'f' => Some(Action::Find),
+            'g' => Some(Action::GoToLine),
             'h' => Some(Action::Backspace),
             'i' => Some(Action::QuickDefinition),
             'j' => Some(Action::JoinLines),
             'k' => Some(Action::Reformat),
-            'n' => Some(Action::OpenFile),
+            'n' | 'N' => Some(Action::OpenFile),
             'q' => Some(Action::Quit),
             'r' => Some(Action::Replace),
             's' => Some(Action::SaveAll),
             'v' => Some(Action::Paste),
-            'w' => Some(Action::DeleteWord),
+            'u' | 'U' => Some(Action::ToggleCase),
+            '/' => Some(Action::ToggleComment),
+            'w' => Some(Action::ExtendSelection),
+            'W' => Some(Action::ShrinkSelection),
             'x' => Some(Action::Cut),
             'y' => Some(Action::DeleteLine),
             'z' => Some(Action::Undo),
@@ -254,14 +345,22 @@ impl Keymap {
 
         match code {
             KeyCode::Char(c) => {
-                if ctrl {
+                if ctrl && alt && c == 'l' {
+                    Some(Action::Reformat)
+                } else if ctrl && c == '7' {
+                    Some(Action::ToggleComment)
+                } else if ctrl {
                     Keymap::ctrl_char_action(c)
+                } else if alt && c == 'A' {
+                    Some(Action::FindAction)
                 } else if alt && c == 'F' {
                     Some(Action::FindInFiles)
                 } else if alt && c == 'J' {
                     Some(Action::SelectAllOccurrences)
                 } else if alt && c == 'E' {
                     Some(Action::SendToPane)
+                } else if alt && c == 'W' {
+                    Some(Action::ShrinkSelection)
                 } else if alt {
                     if self.config.fallback_enabled {
                         // Alt+Y is the "Ctrl+Shift+Y" proxy; redo is no longer
@@ -279,7 +378,9 @@ impl Keymap {
                 }
             }
             KeyCode::Backspace => {
-                if ctrl {
+                if ctrl && shift {
+                    Some(Action::LastEditLocation)
+                } else if ctrl {
                     Some(Action::DeleteWordBackward)
                 } else if alt {
                     None
@@ -295,17 +396,27 @@ impl Keymap {
                 }
             },
             KeyCode::Enter => {
-                if ctrl {
+                if alt {
+                    Some(Action::StartNewLineAbove)
+                } else if ctrl {
                     Some(Action::SendToPane)
-                } else if alt {
-                    None
+                } else if shift {
+                    Some(Action::StartNewLine)
                 } else {
                     Some(Action::Newline)
                 }
             }
+            KeyCode::Left if ctrl && alt => Some(Action::NavigateBack),
+            KeyCode::Right if ctrl && alt => Some(Action::NavigateForward),
+            KeyCode::Tab if !ctrl && !alt => Some(Action::Indent),
+            KeyCode::BackTab => Some(Action::Unindent),
             KeyCode::Left => {
-                if ctrl {
-                    None
+                if ctrl && !alt {
+                    if shift {
+                        Some(Action::SelectWordLeft)
+                    } else {
+                        Some(Action::WordLeft)
+                    }
                 } else if alt {
                     Some(Action::PreviousTab)
                 } else if select {
@@ -315,8 +426,12 @@ impl Keymap {
                 }
             }
             KeyCode::Right => {
-                if ctrl {
-                    None
+                if ctrl && !alt {
+                    if shift {
+                        Some(Action::SelectWordRight)
+                    } else {
+                        Some(Action::WordRight)
+                    }
                 } else if alt {
                     Some(Action::NextTab)
                 } else if select {
@@ -328,6 +443,7 @@ impl Keymap {
             KeyCode::PageUp if ctrl => Some(Action::PreviousTab),
             KeyCode::PageDown if ctrl => Some(Action::NextTab),
             KeyCode::F(4) if ctrl => Some(Action::CloseTab),
+            KeyCode::F(12) if ctrl => Some(Action::FileStructure),
             KeyCode::F(3) if !ctrl && !alt => {
                 if shift {
                     Some(Action::FindPrevious)
@@ -359,7 +475,13 @@ impl Keymap {
                 }
             },
             KeyCode::Home => {
-                if ctrl || alt {
+                if ctrl && !alt {
+                    if shift {
+                        Some(Action::SelectFileStart)
+                    } else {
+                        Some(Action::BeginningOfFile)
+                    }
+                } else if alt {
                     None
                 } else if select {
                     Some(Action::SelectHome)
@@ -368,7 +490,13 @@ impl Keymap {
                 }
             }
             KeyCode::End => {
-                if ctrl || alt {
+                if ctrl && !alt {
+                    if shift {
+                        Some(Action::SelectFileEnd)
+                    } else {
+                        Some(Action::EndOfFile)
+                    }
+                } else if alt {
                     None
                 } else if select {
                     Some(Action::SelectEnd)
@@ -405,10 +533,10 @@ mod tests {
     }
 
     #[test]
-    fn letter_bindings_on_ctrl_ctrl_shift_and_alt() {
+    fn letter_bindings_on_ctrl_and_alt() {
         let km = keymap();
         let cases: &[(char, Action)] = &[
-            ('a', Action::BeginningOfLine),
+            ('a', Action::SelectAll),
             ('b', Action::GoToDeclaration),
             ('c', Action::Copy),
             ('d', Action::DuplicateLine),
@@ -423,14 +551,15 @@ mod tests {
             ('r', Action::Replace),
             ('s', Action::SaveAll),
             ('v', Action::Paste),
-            ('w', Action::DeleteWord),
+            ('w', Action::ExtendSelection),
             ('x', Action::Cut),
             ('z', Action::Undo),
+            ('u', Action::ToggleCase),
+            ('/', Action::ToggleComment),
         ];
         for (c, expected) in cases {
             let code = KeyCode::Char(*c);
             assert_eq!(km.dispatch(&event(code, true, false, false)).as_ref(), Some(expected), "Ctrl+{}", c);
-            assert_eq!(km.dispatch(&event(code, true, false, true)).as_ref(), Some(expected), "Ctrl+Shift+{}", c);
             assert_eq!(km.dispatch(&event(code, false, true, false)).as_ref(), Some(expected), "Alt+{}", c);
         }
         assert_eq!(km.dispatch(&event(KeyCode::Char('y'), true, false, false)), Some(Action::DeleteLine));
@@ -520,19 +649,13 @@ mod tests {
     #[test]
     fn unmapped_keys_return_none() {
         let km = keymap();
-        assert_eq!(km.dispatch(&event(KeyCode::Home, true, false, false)), None);
-        assert_eq!(km.dispatch(&event(KeyCode::End, true, false, false)), None);
-        assert_eq!(km.dispatch(&event(KeyCode::Left, true, false, false)), None);
-        assert_eq!(km.dispatch(&event(KeyCode::Right, true, false, false)), None);
         assert_eq!(km.dispatch(&event(KeyCode::Char(' '), true, false, false)), None);
         assert_eq!(km.dispatch(&event(KeyCode::Home, false, true, false)), None);
         assert_eq!(km.dispatch(&event(KeyCode::End, false, true, false)), None);
-        assert_eq!(km.dispatch(&event(KeyCode::Enter, false, true, false)), None);
         assert_eq!(km.dispatch(&event(KeyCode::Char(' '), false, true, false)), None);
-        assert_eq!(km.dispatch(&event(KeyCode::Char('g'), true, false, false)), None);
-        assert_eq!(km.dispatch(&event(KeyCode::Char('g'), false, true, false)), None);
-        assert_eq!(km.dispatch(&event(KeyCode::Char('g'), true, false, true)), None);
-        assert_eq!(km.dispatch(&event(KeyCode::Tab, false, false, false)), None);
+        assert_eq!(km.dispatch(&event(KeyCode::Char('o'), true, false, false)), None);
+        assert_eq!(km.dispatch(&event(KeyCode::Char('o'), false, true, false)), None);
+        assert_eq!(km.dispatch(&event(KeyCode::Char('o'), true, false, true)), None);
     }
 
     #[test]
@@ -547,7 +670,7 @@ mod tests {
         assert_eq!(km.dispatch(&event(KeyCode::Char('e'), false, true, false)), None);
         // Ctrl bindings still work
         assert_eq!(km.dispatch(&event(KeyCode::Char('q'), true, false, false)), Some(Action::Quit));
-        assert_eq!(km.dispatch(&event(KeyCode::Char('w'), true, false, false)), Some(Action::DeleteWord));
+        assert_eq!(km.dispatch(&event(KeyCode::Char('w'), true, false, false)), Some(Action::ExtendSelection));
     }
 
     #[test]
@@ -572,8 +695,45 @@ mod tests {
         assert_eq!(km.dispatch(&event(KeyCode::Char('J'), false, true, true)), Some(Action::SelectAllOccurrences));
         assert_eq!(km.dispatch(&event(KeyCode::Char('E'), false, true, true)), Some(Action::SendToPane));
         assert_eq!(km.dispatch(&event(KeyCode::Enter, true, false, false)), Some(Action::SendToPane));
-        assert_eq!(km.dispatch(&event(KeyCode::Char('f'), false, true, false)), Some(Action::Find));
-        assert_eq!(km.dispatch(&event(KeyCode::Char('j'), false, true, false)), Some(Action::JoinLines));
+    }
+
+    #[test]
+    fn word_file_line_and_selection_keys() {
+        let km = keymap();
+        let cases = [
+            (event(KeyCode::Left, true, false, false), Action::WordLeft),
+            (event(KeyCode::Right, true, false, false), Action::WordRight),
+            (event(KeyCode::Left, true, false, true), Action::SelectWordLeft),
+            (event(KeyCode::Right, true, false, true), Action::SelectWordRight),
+            (event(KeyCode::Home, true, false, false), Action::BeginningOfFile),
+            (event(KeyCode::End, true, false, false), Action::EndOfFile),
+            (event(KeyCode::Home, true, false, true), Action::SelectFileStart),
+            (event(KeyCode::End, true, false, true), Action::SelectFileEnd),
+            (event(KeyCode::Enter, false, false, true), Action::StartNewLine),
+            (event(KeyCode::Char('W'), true, false, true), Action::ShrinkSelection),
+            (event(KeyCode::Char('W'), false, true, true), Action::ShrinkSelection),
+            (event(KeyCode::Tab, false, false, false), Action::Indent),
+            (event(KeyCode::BackTab, false, false, true), Action::Unindent),
+            (event(KeyCode::Char('g'), true, false, false), Action::GoToLine),
+            (event(KeyCode::Char('g'), false, true, false), Action::GoToLine),
+            (event(KeyCode::Left, true, true, false), Action::NavigateBack),
+            (event(KeyCode::Right, true, true, false), Action::NavigateForward),
+            (event(KeyCode::Enter, true, true, false), Action::StartNewLineAbove),
+            (event(KeyCode::Enter, false, true, false), Action::StartNewLineAbove),
+            (event(KeyCode::Char('7'), true, false, false), Action::ToggleComment),
+            (event(KeyCode::Char('U'), true, false, true), Action::ToggleCase),
+            (event(KeyCode::Char('l'), true, true, false), Action::Reformat),
+            (event(KeyCode::Up, false, true, true), Action::MoveLineUp),
+            (event(KeyCode::Down, false, true, true), Action::MoveLineDown),
+            (event(KeyCode::Backspace, true, false, true), Action::LastEditLocation),
+            (event(KeyCode::F(12), true, false, false), Action::FileStructure),
+            (event(KeyCode::Char('A'), true, false, true), Action::FindAction),
+            (event(KeyCode::Char('A'), false, true, true), Action::FindAction),
+            (event(KeyCode::Char('N'), true, false, true), Action::OpenFile),
+        ];
+        for (ev, expected) in cases {
+            assert_eq!(km.dispatch(&ev), Some(expected.clone()), "{:?}", ev);
+        }
     }
 
     #[test]
