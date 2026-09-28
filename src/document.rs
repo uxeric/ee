@@ -509,6 +509,9 @@ impl Document {
     }
 
     pub fn move_by(&mut self, movement: impl Fn(&mut Document), select: bool) {
+        if select && !(self.extra_carets.is_empty() && self.occurrences.is_empty()) {
+            return self.select_at_every_caret(movement);
+        }
         self.occurrences.clear();
         if select {
             let anchor = match self.selection {
@@ -539,6 +542,46 @@ impl Document {
         moved.dedup();
         moved.retain(|p| *p != self.cursor);
         self.extra_carets = moved;
+    }
+
+    fn select_at_every_caret(&mut self, movement: impl Fn(&mut Document)) {
+        let mut ranges = std::mem::take(&mut self.occurrences);
+        if let Some(((sl, sc), (_, ec))) = self.selection.take().filter(|((sl, _), (el, _))| sl == el) {
+            ranges.push((sl, sc, ec));
+        }
+        let anchor_of = |caret: (usize, usize)| {
+            ranges
+                .iter()
+                .find_map(|&(l, s, e)| match caret {
+                    (cl, cc) if cl == l && cc == e => Some((l, s)),
+                    (cl, cc) if cl == l && cc == s => Some((l, e)),
+                    _ => None,
+                })
+                .unwrap_or(caret)
+        };
+        let active = self.cursor;
+        let mut carets = vec![active];
+        carets.append(&mut self.extra_carets);
+        let mut moved = Vec::new();
+        let mut selected = Vec::new();
+        for caret in carets {
+            let anchor = anchor_of(caret);
+            self.cursor = caret;
+            movement(self);
+            moved.push(self.cursor);
+            if anchor.0 == self.cursor.0 && anchor.1 != self.cursor.1 {
+                selected.push((anchor.0, anchor.1.min(self.cursor.1), anchor.1.max(self.cursor.1)));
+            }
+        }
+        self.cursor = moved[0];
+        let mut extras: Vec<(usize, usize)> = moved[1..].to_vec();
+        extras.sort();
+        extras.dedup();
+        extras.retain(|p| *p != self.cursor);
+        self.extra_carets = extras;
+        selected.sort();
+        selected.dedup();
+        self.occurrences = selected;
     }
 
     pub fn move_left(&mut self) {
@@ -1226,6 +1269,11 @@ impl Document {
     }
 
     pub fn copy_text(&self) -> (String, bool) {
+        if !self.occurrences.is_empty() {
+            let texts: Vec<String> =
+                self.occurrences.iter().map(|&(l, s, e)| self.lines[l].chars().skip(s).take(e - s).collect()).collect();
+            return (texts.join("\n"), false);
+        }
         match self.selected_text() {
             Some(t) => (t, false),
             None => (format!("{}\n", self.lines[self.cursor.0]), true),
@@ -1233,7 +1281,7 @@ impl Document {
     }
 
     pub fn cut(&mut self) {
-        if self.selection.is_some() {
+        if self.has_selection() {
             self.snapshot();
             self.delete_selection();
         } else if self.lines.len() > 1 {
@@ -1243,6 +1291,29 @@ impl Document {
             self.lines[0].clear();
             self.cursor = (0, 0);
         }
+    }
+
+    fn insert_piece_per_caret(&mut self, pieces: &[&str]) {
+        let active = self.cursor;
+        let mut carets: Vec<(usize, usize)> = vec![active];
+        carets.extend(self.extra_carets.iter().copied());
+        carets.sort();
+        let mut placed = carets.clone();
+        for i in (0..carets.len()).rev() {
+            let (line, col) = carets[i];
+            let n = pieces[i].chars().count();
+            let mut chars: Vec<char> = self.lines[line].chars().collect();
+            let at = col.min(chars.len());
+            chars.splice(at..at, pieces[i].chars());
+            self.lines[line] = chars.into_iter().collect();
+            placed[i] = (line, at + n);
+            for later in placed.iter_mut().skip(i + 1).filter(|p| p.0 == line) {
+                later.1 += n;
+            }
+        }
+        let index = carets.iter().position(|&p| p == active).unwrap_or(0);
+        self.cursor = placed[index];
+        self.extra_carets = placed.into_iter().enumerate().filter(|(i, _)| *i != index).map(|(_, p)| p).collect();
     }
 
     pub fn insert_text(&mut self, text: &str) {
@@ -1256,6 +1327,10 @@ impl Document {
                 self.insert_char_at_carets(c);
             }
             return;
+        }
+        let pieces: Vec<&str> = text.split('\n').collect();
+        if !self.extra_carets.is_empty() && pieces.len() == self.extra_carets.len() + 1 && !text.ends_with('\n') {
+            return self.insert_piece_per_caret(&pieces);
         }
         self.extra_carets.clear();
         let (line, col) = self.cursor;
@@ -1916,6 +1991,51 @@ mod tests {
         d.cursor = (1, 0);
         d.extra_carets = vec![(2, 0), (0, 1)];
         assert_eq!(d.caret_lines(), vec!["ls", "pwd", "echo hi"], "top to bottom whatever the caret order");
+    }
+
+    #[test]
+    fn shift_home_and_end_select_at_every_caret_and_shrink_back() {
+        let mut d = doc_with("abc def\n  ghi jkl");
+        d.cursor = (0, 3);
+        d.extra_carets = vec![(1, 5)];
+        d.move_by(Document::end, true);
+        assert_eq!(d.occurrences, vec![(0, 3, 7), (1, 5, 9)]);
+        assert_eq!((d.cursor, d.extra_carets.clone()), ((0, 7), vec![(1, 9)]));
+        d.move_by(Document::home, true);
+        assert_eq!(d.occurrences, vec![(0, 0, 3), (1, 2, 5)], "back past each anchor, to the first non-blank");
+        d.move_by(Document::end, true);
+        d.move_by(Document::home, true);
+        d.move_by(Document::end, true);
+        assert_eq!(d.occurrences, vec![(0, 3, 7), (1, 5, 9)]);
+        assert_eq!(d.copy_text(), (" def\n jkl".to_string(), false), "copy takes every selection");
+        d.move_by(Document::move_left, true);
+        d.move_by(Document::move_left, true);
+        d.move_by(Document::move_left, true);
+        d.move_by(Document::move_left, true);
+        assert!(d.occurrences.is_empty(), "a caret back on its anchor selects nothing");
+        assert_eq!((d.cursor, d.extra_carets.clone()), ((0, 3), vec![(1, 5)]));
+
+        d.move_by(Document::end, true);
+        d.insert_char('X');
+        assert_eq!(d.lines, vec!["abcX", "  ghiX"], "typing replaces every selection");
+        d.undo();
+        assert_eq!(d.occurrences, vec![(0, 3, 7), (1, 5, 9)], "undo brings the selections back");
+        d.cut();
+        assert_eq!(d.lines, vec!["abc", "  ghi"]);
+        d.undo();
+        assert_eq!(d.lines, vec!["abc def", "  ghi jkl"]);
+        let copied = d.copy_text().0;
+        d.move_by(Document::home, false);
+        assert!(d.occurrences.is_empty(), "plain movement deselects");
+        d.move_by(Document::end, false);
+        d.insert_text(&copied);
+        assert_eq!(d.lines, vec!["abc def def", "  ghi jkl jkl"], "pasting as many lines as carets gives each caret its line");
+        assert_eq!((d.cursor, d.extra_carets.clone()), ((0, 11), vec![(1, 13)]));
+        let mut d = doc_with("ab");
+        d.cursor = (0, 1);
+        d.extra_carets = vec![(0, 2)];
+        d.insert_text("X\nY");
+        assert_eq!((d.lines.clone(), d.cursor, d.extra_carets.clone()), (vec!["aXbY".to_string()], (0, 2), vec![(0, 4)]), "carets on one line");
     }
 
     #[test]

@@ -87,7 +87,7 @@ Headings, emphasis, lists, checkboxes, quotes, tables, GitHub alerts, code block
 
 <p align="center"><img src="assets/readme/multicursor.svg" alt="Three carets added with Ctrl+Down type the same text on three lines at once; then Alt+Shift+E sends all three lines to Claude in the next herdr pane, and a cyan beam crosses the status bar."></p>
 
-`Ctrl+Up` and `Ctrl+Down` leave a caret behind; `Alt`+Click adds one anywhere. Typing, deleting and pasting a single line happen at every caret, and the arrow keys move them all. `Alt+Shift+J` puts a caret on every copy of the word under the caret, so typing replaces them all at once. `Esc` goes back to one caret.
+`Ctrl+Up` and `Ctrl+Down` leave a caret behind; `Alt`+Click adds one anywhere. Typing, deleting and pasting happen at every caret, and the arrow keys move them all. `Shift+Home`, `Shift+End` and the other `Shift` moves give every caret its own selection; copy takes them all, one per line, and pasting as many lines as there are carets gives each caret its own line. `Alt+Shift+J` puts a caret on every copy of the word under the caret, so typing replaces them all at once. `Esc` goes back to one caret.
 
 ### Send lines to herdr
 
@@ -167,7 +167,7 @@ Terminals can't tell `Ctrl+X` from `Ctrl+Shift+X`, so WebStorm's `Ctrl+Shift+let
 | Move by word | <kbd>Ctrl</kbd>+<kbd>←</kbd> / <kbd>Ctrl</kbd>+<kbd>→</kbd> | — |
 | Page up / down: every caret moves a screen and the view follows | <kbd>PageUp</kbd> / <kbd>PageDown</kbd> | — |
 | Beginning / end of file | <kbd>Ctrl</kbd>+<kbd>Home</kbd> / <kbd>Ctrl</kbd>+<kbd>End</kbd> | — |
-| Select while moving | <kbd>Shift</kbd> + any of the moves above (<kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>→</kbd> selects by word) | — |
+| Select while moving, at every caret; moving back to where you started deselects | <kbd>Shift</kbd> + any of the moves above (<kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>→</kbd> selects by word) | — |
 | Extend selection: word, then quotes or brackets, line, paragraph, whole file | <kbd>Ctrl</kbd>+<kbd>W</kbd> | <kbd>Alt</kbd>+<kbd>W</kbd> |
 | Shrink selection back one step | <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>W</kbd> | <kbd>Alt</kbd>+<kbd>Shift</kbd>+<kbd>W</kbd> |
 | First non-blank character; press again for column 0 (smart Home) | <kbd>Home</kbd> | — |
