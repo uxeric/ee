@@ -91,7 +91,7 @@ Headings, emphasis, lists, checkboxes, quotes, tables, GitHub alerts, code block
 
 ### Send lines to herdr
 
-With [herdr](https://herdr.dev) running, `Alt+Shift+E` pastes the caret's line into a herdr pane without pressing Enter, so you can check it, edit it, or send more before you run it. With several carets, it pastes every caret's line, top to bottom, as one paste. Agents such as Claude get the same paste in their prompt box. `Alt+Shift+M` moves the lines instead: they're sent the same way, then removed from your file (one `Ctrl+Z` brings them back). If the send fails, nothing is removed.
+With [herdr](https://herdr.dev) running, `Alt+Shift+E` pastes the caret's line into a herdr pane without pressing Enter, so you can check it, edit it, or send more before you run it. With several carets, it pastes every caret's line, top to bottom, as one paste. Agents such as Claude get the same paste in their prompt box. `Alt+Shift+M` moves the lines instead: they're sent the same way, then removed from your file (one `Ctrl+Z` brings them back). If the send fails, nothing is removed. On Omarchy, moving also takes you there: inside herdr the target pane gets the focus, and from a separate terminal the herdr window comes to the front, so you can press Enter right away. If `ee` can't tell for certain which window that is, it leaves your focus where it was.
 
 - **Inside herdr:** the lines go to the other pane in `ee`'s tab. If the tab has several, `ee` tries the neighbour to the right, then left, below and above. It never sends to its own pane or to other tabs.
 - **Outside herdr** (`ee` in a plain terminal): the lines go to whichever herdr pane is focused.
@@ -112,8 +112,9 @@ The sent lines answer back: a magenta write head sweeps each one, breaking it in
 | When | What you see |
 |---|---|
 | Starting up | The editor jacks in behind a neon scan (it never holds up your typing) |
-| A popup opens (actions, file structure, open file) | It decodes into view |
-| An update is ready | The popup decodes in behind a neon scan |
+| A popup opens (command palette, file structure, open file, theme, keys) | Its frame draws out from the corners while the text decrypts from hex noise, left to right |
+| Moving the selection in a popup | The new row locks on with a cyan sweep |
+| An update is ready | The update panel decrypts in, with an amber hazard band on its frame |
 | Switching tabs | The new tab's text sweeps in from the direction you moved |
 | Opening a file | The text decodes in with a cyan glow |
 | Jumping to a match | The match flashes magenta |
@@ -124,7 +125,7 @@ The sent lines answer back: a magenta write head sweeps each one, breaking it in
 | An error | The status bar glitches red |
 | Quitting | The screen dissolves |
 
-The badge at the bottom left says where your typing goes: `edit`, `find`, `find in files`, `replace` or `prompt`. The editor only redraws while an effect runs, so it uses no CPU when idle. `EOE_NO_FX=1` turns all of it off.
+Popups float on a shadow over faint scanlines, inside a bracketed frame: the title is cut into the top edge, and the bottom edge carries the match count (or, on the keys sheet, the version). The badge at the bottom left says where your typing goes: `edit`, `find`, `find in files`, `replace` or `prompt`. The editor only redraws while an effect runs, so it uses no CPU when idle. `EOE_NO_FX=1` turns all of it off.
 
 <img src="assets/readme/divider.svg" width="100%" alt="">
 
@@ -137,16 +138,16 @@ Terminals can't tell `Ctrl+X` from `Ctrl+Shift+X`, so WebStorm's `Ctrl+Shift+let
 | Action | Keys | Action | Keys |
 |---|---|---|---|
 | Save all | <kbd>Ctrl</kbd>+<kbd>S</kbd> | Find | <kbd>Ctrl</kbd>+<kbd>F</kbd> |
-| Undo / redo | <kbd>Ctrl</kbd>+<kbd>Z</kbd> / <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>Z</kbd> | Find in all tabs | <kbd>Shift</kbd> <kbd>Shift</kbd> |
+| Undo / redo | <kbd>Ctrl</kbd>+<kbd>Z</kbd> / <kbd>Alt</kbd>+<kbd>Shift</kbd>+<kbd>Z</kbd> | Find in all tabs | <kbd>Shift</kbd> <kbd>Shift</kbd> |
 | Copy / cut / paste | <kbd>Ctrl</kbd>+<kbd>C</kbd> <kbd>X</kbd> <kbd>V</kbd> | Replace | <kbd>Ctrl</kbd>+<kbd>R</kbd> |
 | Add caret below | <kbd>Ctrl</kbd>+<kbd>↓</kbd> | Next / previous tab | <kbd>Ctrl</kbd>+<kbd>]</kbd> / <kbd>Ctrl</kbd>+<kbd>[</kbd> |
 | Duplicate line | <kbd>Ctrl</kbd>+<kbd>D</kbd> | Open file | <kbd>Ctrl</kbd>+<kbd>N</kbd> |
 | Extend selection | <kbd>Ctrl</kbd>+<kbd>W</kbd> | Move by word | <kbd>Ctrl</kbd>+<kbd>←</kbd> <kbd>→</kbd> |
-| Command palette | <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>A</kbd> / <kbd>Alt</kbd>+<kbd>Shift</kbd>+<kbd>A</kbd> | File structure | <kbd>Ctrl</kbd>+<kbd>F12</kbd> |
+| Command palette | <kbd>Alt</kbd>+<kbd>Shift</kbd>+<kbd>A</kbd> | File structure | <kbd>Ctrl</kbd>+<kbd>F12</kbd> |
 | Select all | <kbd>Ctrl</kbd>+<kbd>A</kbd> | Toggle comment | <kbd>Ctrl</kbd>+<kbd>/</kbd> |
 | Go to line | <kbd>Ctrl</kbd>+<kbd>G</kbd> | Back / forward | <kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>←</kbd> <kbd>→</kbd> |
 | Indent / unindent | <kbd>Tab</kbd> / <kbd>Shift</kbd>+<kbd>Tab</kbd> | Start new line | <kbd>Shift</kbd>+<kbd>Enter</kbd> |
-| Send to herdr | <kbd>Alt</kbd>+<kbd>Shift</kbd>+<kbd>E</kbd> | Switch theme | <kbd>Ctrl</kbd>+<kbd>`</kbd> / <kbd>Alt</kbd>+<kbd>`</kbd> |
+| Send to herdr | <kbd>Alt</kbd>+<kbd>Shift</kbd>+<kbd>E</kbd> | Switch theme | <kbd>Alt</kbd>+<kbd>`</kbd> |
 | Quit | <kbd>Ctrl</kbd>+<kbd>Q</kbd> | Keyboard shortcuts | <kbd>F1</kbd>, or click **F1 help** in the status bar |
 
 <details>
@@ -184,7 +185,7 @@ Terminals can't tell `Ctrl+X` from `Ctrl+Shift+X`, so WebStorm's `Ctrl+Shift+let
 | Join lines | <kbd>Ctrl</kbd>+<kbd>J</kbd> | <kbd>Alt</kbd>+<kbd>J</kbd> |
 | Reformat (trim trailing whitespace, at most 2 blank lines in a row) | <kbd>Ctrl</kbd>+<kbd>K</kbd> / <kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>L</kbd> | <kbd>Alt</kbd>+<kbd>K</kbd> |
 | Undo | <kbd>Ctrl</kbd>+<kbd>Z</kbd> | <kbd>Alt</kbd>+<kbd>Z</kbd> |
-| Redo | <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>Z</kbd> | <kbd>Alt</kbd>+<kbd>Shift</kbd>+<kbd>Z</kbd> / <kbd>Alt</kbd>+<kbd>Y</kbd> |
+| Redo | <kbd>Alt</kbd>+<kbd>Shift</kbd>+<kbd>Z</kbd> (<kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>Z</kbd> with the kitty keyboard protocol) | <kbd>Alt</kbd>+<kbd>Y</kbd> |
 
 `Ctrl+Y` is Delete line, as in WebStorm. Plain movement clears the selection. Long lines scroll sideways to follow the caret, and <kbd>Shift</kbd>+wheel or a sideways wheel scrolls them by hand.
 
@@ -245,9 +246,9 @@ In the replace bar, <kbd>Tab</kbd> switches between the Find and Replace fields.
 | Save all | <kbd>Ctrl</kbd>+<kbd>S</kbd> / <kbd>Alt</kbd>+<kbd>S</kbd> |
 | Open or create a file: fuzzy-find files under the current folder, or type a path | <kbd>Ctrl</kbd>+<kbd>N</kbd> / <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>N</kbd> / <kbd>Alt</kbd>+<kbd>N</kbd> |
 | File structure: jump to a markdown heading | <kbd>Ctrl</kbd>+<kbd>F12</kbd> |
-| Command palette: every action, with its keys | <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>A</kbd> / <kbd>Alt</kbd>+<kbd>Shift</kbd>+<kbd>A</kbd> |
+| Command palette: every action, with its keys | <kbd>Alt</kbd>+<kbd>Shift</kbd>+<kbd>A</kbd> (<kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>A</kbd> with the kitty keyboard protocol) |
 | Keyboard shortcuts: a sheet of the basics, including herdr and the command palette (any key closes it) | <kbd>F1</kbd>, or click **F1 help** at the bottom right |
-| Switch theme: Follow Omarchy, Neon, or any installed Omarchy theme, previewed as you move | <kbd>Ctrl</kbd>+<kbd>`</kbd> / <kbd>Alt</kbd>+<kbd>`</kbd> |
+| Switch theme: Follow Omarchy, Neon, or any installed Omarchy theme, previewed as you move | <kbd>Alt</kbd>+<kbd>`</kbd> (<kbd>Ctrl</kbd>+<kbd>`</kbd> with the kitty keyboard protocol) |
 | Last edit location | <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>Backspace</kbd> |
 | Rename the file, or save an untitled tab under a name | <kbd>Shift</kbd>+<kbd>F6</kbd> |
 | Next tab | <kbd>Ctrl</kbd>+<kbd>]</kbd> / <kbd>Alt</kbd>+<kbd>→</kbd> / <kbd>Ctrl</kbd>+<kbd>PageDown</kbd> |
@@ -295,7 +296,7 @@ These code-editor keys are bound and show "not applicable":
 
 When the terminal supports the kitty keyboard protocol (Alacritty, kitty, Ghostty, foot and WezTerm do), `ee` turns it on. That's what makes <kbd>Ctrl</kbd>+<kbd>[</kbd> (otherwise the same key as <kbd>Esc</kbd>) and the double <kbd>Shift</kbd> tap work. <kbd>Ctrl</kbd>+<kbd>]</kbd> works in any terminal. Start with `EOE_LEGACY_KEYS=1` to use the classic key encoding instead, and try that first if typing accents with dead keys or an input method misbehaves.
 
-`Shift+Enter`, `Ctrl+Shift+W`, `Ctrl+Shift+A`, `Ctrl+Shift+Z` and `Ctrl+Shift+Backspace` need the kitty keyboard protocol, because classic terminals send them as plain `Enter`, `Ctrl+W`, `Ctrl+A` (select all), `Ctrl+Z` (undo) and `Ctrl+Backspace` (delete word). Their fallbacks work everywhere: `Alt+Shift+W` shrinks the selection, `Alt+Shift+A` opens the command palette and `Alt+Shift+Z` redoes. `Ctrl+/` arrives as `Ctrl+7` in classic terminals, and both work. `Ctrl+Space` (code completion) isn't bound. `Ctrl+Enter` and `Ctrl+Shift+Enter` (send and move to a herdr pane) and ``Ctrl+` `` (switch theme) also need the kitty keyboard protocol; ``Alt+` `` works everywhere.
+`Shift+Enter`, `Ctrl+Shift+W`, `Ctrl+Shift+A`, `Ctrl+Shift+Z` and `Ctrl+Shift+Backspace` need the kitty keyboard protocol all the way to `ee`, because classic terminals, and herdr when your terminal speaks the classic protocol, send them as plain `Enter`, `Ctrl+W`, `Ctrl+A` (select all), `Ctrl+Z` (undo) and `Ctrl+Backspace` (delete word). Their fallbacks work everywhere: `Alt+Shift+W` shrinks the selection, `Alt+Shift+A` opens the command palette and `Alt+Shift+Z` redoes. `Ctrl+/` arrives as `Ctrl+7` in classic terminals, and both work. `Ctrl+Space` (code completion) isn't bound. `Ctrl+Enter` and `Ctrl+Shift+Enter` (send and move to a herdr pane) and ``Ctrl+` `` (switch theme) also need the kitty keyboard protocol; ``Alt+` `` works everywhere.
 
 </details>
 
@@ -310,7 +311,7 @@ When the terminal supports the kitty keyboard protocol (Alacritty, kitty, Ghostt
 alt_fallback = true
 
 # "omarchy" (the default) follows your Omarchy theme's colours, "neon" keeps ee's own
-# palette, and a theme name such as "tokyo-night" pins that Omarchy theme. Ctrl+` sets it for you.
+# palette, and a theme name such as "tokyo-night" pins that Omarchy theme. Alt+` sets it for you.
 theme = "omarchy"
 
 # Give an action an extra key. The default keys keep working.

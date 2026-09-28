@@ -149,7 +149,7 @@ write_config() {
 alt_fallback = true
 
 # "omarchy" follows your Omarchy theme's colours, "neon" keeps ee's own palette,
-# and a theme name such as "tokyo-night" pins that theme. Ctrl+` in ee picks one.
+# and a theme name such as "tokyo-night" pins that theme. Alt+` in ee picks one.
 theme = "omarchy"
 
 # Give an action an extra key. The default keys keep working.

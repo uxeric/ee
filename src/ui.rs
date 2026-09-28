@@ -7,7 +7,6 @@ use ratatui::Frame;
 use crate::document::Document;
 use crate::motion::Areas;
 use crate::state::{Alert, EditorState, Mode, PickerKind, PromptKind};
-use ratatui::widgets::{Block, BorderType, Clear};
 use crate::theme;
 
 pub fn render(frame: &mut Frame, state: &EditorState) {
@@ -47,73 +46,96 @@ pub fn popup_rect(area: Rect, state: &EditorState) -> Option<Rect> {
     let picker = state.picker.as_ref()?;
     let editor = editor_rect_for(area, state.mode);
     let width = area.width.saturating_sub(4).min(84);
-    let rows = (picker.shown.len().max(1) as u16 + 3).min(18).min(editor.height.max(3));
+    let rows = (picker.shown.len().max(1) as u16 + 5).min(20).min(editor.height.max(3));
     Some(Rect::new(area.x + (area.width - width) / 2, editor.y + editor.height.min(1), width, rows))
 }
 
+struct PickerView {
+    list: Rect,
+    start: usize,
+}
+
+fn picker_view(area: Rect, state: &EditorState) -> Option<PickerView> {
+    let picker = state.picker.as_ref()?;
+    let rect = popup_rect(area, state)?;
+    let inner = Rect::new(rect.x + 1, rect.y + 1, rect.width.saturating_sub(2), rect.height.saturating_sub(2));
+    let list = Rect::new(inner.x, inner.y + 2, inner.width, inner.height.saturating_sub(3));
+    let visible = list.height as usize;
+    Some(PickerView { list, start: picker.selected.saturating_sub(visible.saturating_sub(1)) })
+}
+
+pub fn picker_row(area: Rect, state: &EditorState) -> Option<Rect> {
+    let picker = state.picker.as_ref().filter(|p| !p.shown.is_empty())?;
+    let view = picker_view(area, state)?;
+    let offset = picker.selected.checked_sub(view.start)? as u16;
+    (offset < view.list.height).then(|| Rect::new(view.list.x, view.list.y + offset, view.list.width, 1))
+}
+
 fn render_picker(frame: &mut Frame, state: &EditorState, area: Rect) {
-    let (Some(picker), Some(rect)) = (state.picker.as_ref(), popup_rect(area, state)) else {
+    let (Some(picker), Some(rect), Some(view)) = (state.picker.as_ref(), popup_rect(area, state), picker_view(area, state)) else {
         return;
     };
-    let title = match picker.kind {
-        PickerKind::Actions => " actions ",
-        PickerKind::Structure => " file structure ",
-        PickerKind::Files => " open or create a file ",
-        PickerKind::Themes => " theme ",
+    let (title, enter) = match picker.kind {
+        PickerKind::Actions => ("command palette", "run"),
+        PickerKind::Structure => ("file structure", "jump"),
+        PickerKind::Files => ("open or create a file", "open"),
+        PickerKind::Themes => ("theme", "keep"),
     };
-    let block = Block::bordered()
-        .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(theme::pal().ice))
-        .title(Span::styled(title, Style::default().fg(theme::pal().hot).add_modifier(Modifier::BOLD)))
-        .style(Style::default().bg(theme::pal().void));
-    let inner = block.inner(rect);
-    frame.render_widget(Clear, rect);
-    frame.render_widget(block, rect);
+    let p = theme::pal();
+    let tag = format!("{}/{}", picker.shown.len(), picker.total());
+    let inner = crate::hud::draw(frame.buffer_mut(), rect, &crate::hud::Chrome { title, tag: Some(tag), hazard: false });
     if inner.height == 0 {
         return;
     }
     let input = Line::from(vec![
-        Span::styled("▸ ", Style::default().fg(theme::pal().hot)),
-        Span::styled(picker.input.clone(), theme::text()),
+        Span::styled(" ❯ ", Style::default().fg(p.hot).add_modifier(Modifier::BOLD)),
+        Span::styled(picker.input.clone(), theme::text().add_modifier(Modifier::BOLD)),
         Span::styled(" ", theme::caret()),
     ]);
     frame.render_widget(Paragraph::new(input), Rect::new(inner.x, inner.y, inner.width, 1));
-    let count = format!("{}/{} ", picker.shown.len(), picker.total());
-    render_right(frame, Rect::new(inner.x, inner.y, inner.width, 1), (picker.input.chars().count() + 4) as u16, &count, theme::dim());
-    let visible = inner.height.saturating_sub(1) as usize;
+    if inner.height > 1 {
+        let rule = "╌".repeat(inner.width.saturating_sub(2) as usize);
+        frame.render_widget(Paragraph::new(Span::styled(rule, Style::default().fg(p.ghost))), Rect::new(inner.x + 1, inner.y + 1, inner.width.saturating_sub(2), 1));
+    }
+    if inner.height > 3 {
+        let esc = if picker.kind == PickerKind::Themes { "put back" } else { "close" };
+        let row = Rect::new(inner.x + 1, inner.y + inner.height - 1, inner.width.saturating_sub(2), 1);
+        crate::hud::hints(frame.buffer_mut(), row, &[("↑↓", "choose"), ("Enter", enter), ("Esc", esc)]);
+    }
     if picker.shown.is_empty() {
         let hint = match picker.kind {
             PickerKind::Files if !picker.input.trim().is_empty() => format!("Enter opens {}, creating it if it doesn't exist", picker.input.trim()),
             _ => "nothing matches".to_string(),
         };
-        if visible > 0 {
-            frame.render_widget(Paragraph::new(Span::styled(hint, theme::dim())), Rect::new(inner.x + 2, inner.y + 1, inner.width.saturating_sub(2), 1));
+        if view.list.height > 0 {
+            frame.render_widget(Paragraph::new(Span::styled(hint, theme::dim())), Rect::new(view.list.x + 3, view.list.y, view.list.width.saturating_sub(3), 1));
         }
         return;
     }
-    let start = picker.selected.saturating_sub(visible.saturating_sub(1));
-    for (row, (index, hits)) in picker.shown.iter().enumerate().skip(start).take(visible) {
-        let y = inner.y + 1 + (row - start) as u16;
+    for (row, (index, hits)) in picker.shown.iter().enumerate().skip(view.start).take(view.list.height as usize) {
+        let y = view.list.y + (row - view.start) as u16;
         let selected = row == picker.selected;
         let item = picker.item(*index);
-        let base = if selected { Style::default().bg(theme::pal().selection) } else { Style::default() };
-        let mut spans = vec![Span::styled(if selected { "▌ " } else { "  " }, base.fg(theme::pal().hot))];
-        for (i, c) in item.label.chars().enumerate() {
-            let style = if hits.contains(&i) {
-                base.fg(theme::pal().hot).add_modifier(Modifier::BOLD)
-            } else {
-                base.fg(theme::pal().text)
-            };
-            spans.push(Span::styled(c.to_string(), style));
-        }
-        let row_rect = Rect::new(inner.x, y, inner.width, 1);
+        let row_rect = Rect::new(view.list.x, y, view.list.width, 1);
+        let base = if selected { Style::default().bg(p.selection) } else { Style::default() };
         if selected {
             frame.buffer_mut().set_style(row_rect, base);
+        }
+        let mut spans = vec![Span::styled(if selected { " ▶ " } else { "   " }, base.fg(p.hot).add_modifier(Modifier::BOLD))];
+        for (i, c) in item.label.chars().enumerate() {
+            let style = if hits.contains(&i) {
+                base.fg(p.hot).add_modifier(Modifier::BOLD)
+            } else if selected {
+                base.fg(p.text).add_modifier(Modifier::BOLD)
+            } else {
+                base.fg(p.text)
+            };
+            spans.push(Span::styled(c.to_string(), style));
         }
         let used = Line::from(spans.clone()).width() as u16;
         frame.render_widget(Paragraph::new(Line::from(spans)), row_rect);
         if !item.detail.is_empty() {
-            render_right(frame, row_rect, used, &format!("{} ", item.detail), base.fg(theme::pal().ghost));
+            render_right(frame, row_rect, used, &format!("{} ", item.detail), base.fg(if selected { p.ice } else { p.ghost }));
         }
     }
 }
@@ -152,6 +174,7 @@ pub fn areas(area: Rect, state: &EditorState) -> Areas {
         selection,
         caret_rows,
         popup: popup_rect(area, state).or_else(|| help_rect(area, state)),
+        picker_row: picker_row(area, state),
         modal: modal_rect(area, state),
     }
 }
@@ -589,7 +612,7 @@ fn render_status_bar(frame: &mut Frame, state: &EditorState, area: Rect) {
     }
     let (button, room) = match help_button_in(area) {
         Some(b) => {
-            let cap = if state.help { Style::default().fg(theme::pal().void).bg(theme::pal().hot) } else { keycap_style() };
+            let cap = if state.help { Style::default().fg(theme::pal().void).bg(theme::pal().hot) } else { crate::hud::keycap() };
             frame.render_widget(Paragraph::new(Line::from(vec![Span::styled(" F1 ", cap), Span::styled(" help", theme::dim())])), b);
             (b.width + 2, Rect::new(area.x, area.y, area.width - b.width - 2, area.height))
         }
@@ -598,10 +621,6 @@ fn render_status_bar(frame: &mut Frame, state: &EditorState, area: Rect) {
     let right = render_right(frame, room, 0, &format!("{} ", position), theme::dim());
     let left = Rect::new(area.x, area.y, area.width.saturating_sub(button + right + 3), area.height);
     frame.render_widget(Paragraph::new(Line::from(spans)), left);
-}
-
-fn keycap_style() -> Style {
-    Style::default().bg(theme::pal().keycap).fg(theme::pal().text).add_modifier(Modifier::BOLD)
 }
 
 fn help_button_in(status: Rect) -> Option<Rect> {
@@ -613,14 +632,19 @@ pub fn help_button(area: Rect, state: &EditorState) -> Option<Rect> {
     help_button_in(layout(area, state.mode).3)
 }
 
-const HELP_FOOTER: &str = "Any key closes. Ctrl+Shift+A lists every action.";
-
-fn help_rows() -> Vec<(&'static str, &'static str)> {
-    crate::keys::HELP
-        .iter()
-        .filter_map(|name| crate::keys::PALETTE.iter().find(|(n, _, _)| n == name).map(|&(_, label, keys)| (label, keys)))
-        .collect()
+fn help_rows() -> Vec<(&'static str, &'static str, &'static str)> {
+    let mut rows = Vec::new();
+    for (group, names) in crate::keys::HELP {
+        for (i, name) in names.iter().enumerate() {
+            if let Some(&(_, label, keys)) = crate::keys::PALETTE.iter().find(|(n, _, _)| n == name) {
+                rows.push((if i == 0 { *group } else { "" }, label, keys));
+            }
+        }
+    }
+    rows
 }
+
+const HELP_HINTS: [(&str, &str); 2] = [("any key", "close"), ("Alt+Shift+A", "every action")];
 
 pub fn help_rect(area: Rect, state: &EditorState) -> Option<Rect> {
     if !state.help {
@@ -628,9 +652,11 @@ pub fn help_rect(area: Rect, state: &EditorState) -> Option<Rect> {
     }
     let editor = editor_rect_for(area, state.mode);
     let rows = help_rows();
-    let widest = rows.iter().map(|(l, k)| l.chars().count() + k.chars().count() + 6).max().unwrap_or(0).max(HELP_FOOTER.chars().count() + 2);
-    let width = ((widest + 2) as u16).min(area.width.saturating_sub(2));
-    let height = (rows.len() as u16 + 4).min(editor.height);
+    let gutter = crate::keys::HELP.iter().map(|(g, _)| g.chars().count()).max().unwrap_or(0) + 3;
+    let widest = rows.iter().map(|(_, l, k)| gutter + l.chars().count() + k.chars().count() + 6).max().unwrap_or(0);
+    let hints: usize = HELP_HINTS.iter().map(|(k, w)| k.chars().count() + w.chars().count() + 5).sum();
+    let width = ((widest.max(hints) + 4) as u16).min(area.width.saturating_sub(2));
+    let height = (rows.len() as u16 + 5).min(editor.height);
     (width >= 12 && height >= 3).then(|| Rect::new(area.x + (area.width - width) / 2, editor.y + (editor.height - height) / 2, width, height))
 }
 
@@ -638,23 +664,24 @@ fn render_help(frame: &mut Frame, state: &EditorState, area: Rect) {
     let Some(rect) = help_rect(area, state) else {
         return;
     };
-    let block = Block::bordered()
-        .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(theme::pal().ice))
-        .title(Span::styled(" keys ", Style::default().fg(theme::pal().hot).add_modifier(Modifier::BOLD)))
-        .style(Style::default().bg(theme::pal().void));
-    let inner = block.inner(rect);
-    frame.render_widget(Clear, rect);
-    frame.render_widget(block, rect);
-    let body = inner.height.saturating_sub(2) as usize;
-    for (i, (label, keys)) in help_rows().into_iter().take(body).enumerate() {
-        let row = Rect::new(inner.x + 1, inner.y + i as u16, inner.width.saturating_sub(2), 1);
-        frame.render_widget(Paragraph::new(Span::styled(label, theme::text())), row);
-        frame.render_widget(Paragraph::new(Span::styled(format!(" {} ", keys), keycap_style())).alignment(Alignment::Right), row);
+    let p = theme::pal();
+    let tag = Some(format!("ee {}", env!("CARGO_PKG_VERSION")));
+    let inner = crate::hud::draw(frame.buffer_mut(), rect, &crate::hud::Chrome { title: "keys", tag, hazard: false });
+    let gutter = crate::keys::HELP.iter().map(|(g, _)| g.chars().count()).max().unwrap_or(0) as u16 + 3;
+    let body = inner.height.saturating_sub(3) as usize;
+    for (i, (group, label, keys)) in help_rows().into_iter().take(body).enumerate() {
+        let y = inner.y + 1 + i as u16;
+        let row = Rect::new(inner.x + 1, y, inner.width.saturating_sub(2), 1);
+        if !group.is_empty() {
+            frame.render_widget(Paragraph::new(Span::styled(group, Style::default().fg(p.ice).add_modifier(Modifier::BOLD))), row);
+        }
+        let label_rect = Rect::new(row.x + gutter, y, row.width.saturating_sub(gutter), 1);
+        frame.render_widget(Paragraph::new(Span::styled(label, theme::text())), label_rect);
+        frame.render_widget(Paragraph::new(Span::styled(format!(" {} ", keys), crate::hud::keycap())).alignment(Alignment::Right), row);
     }
-    if inner.height >= 2 {
-        let footer = Rect::new(inner.x + 1, inner.y + inner.height - 1, inner.width.saturating_sub(2), 1);
-        frame.render_widget(Paragraph::new(Span::styled(HELP_FOOTER, theme::dim())), footer);
+    if inner.height >= 3 {
+        let row = Rect::new(inner.x + 1, inner.y + inner.height - 1, inner.width.saturating_sub(2), 1);
+        crate::hud::hints(frame.buffer_mut(), row, &HELP_HINTS);
     }
 }
 
@@ -674,18 +701,10 @@ fn selection_length(lines: &[String], start: (usize, usize), end: (usize, usize)
 
 const LOGO: [&str; 4] = ["▄▀▀▀▀▄  ▄▀▀▀▀▄", "█▄▄▄▄█  █▄▄▄▄█", "█       █     ", "▀▄▄▄▄▀  ▀▄▄▄▄▀"];
 
-fn lerp(a: Color, b: Color, t: f32) -> Color {
-    let (Color::Rgb(ar, ag, ab), Color::Rgb(br, bg, bb)) = (a, b) else {
-        return a;
-    };
-    let mix = |x: u8, y: u8| (x as f32 + (y as f32 - x as f32) * t).round() as u8;
-    Color::Rgb(mix(ar, br), mix(ag, bg), mix(ab, bb))
-}
-
 pub fn modal_rect(area: Rect, state: &EditorState) -> Option<Rect> {
     state.update.as_ref()?;
-    let width = 50.min(area.width);
-    let height = 12.min(area.height);
+    let width = 54.min(area.width);
+    let height = 14.min(area.height);
     Some(Rect::new(area.x + (area.width - width) / 2, area.y + (area.height - height) / 2, width, height))
 }
 
@@ -693,32 +712,33 @@ fn render_update_modal(frame: &mut Frame, state: &EditorState, area: Rect) {
     let (Some((from, to)), Some(rect)) = (state.update.as_ref(), modal_rect(area, state)) else {
         return;
     };
-    let block = Block::bordered()
-        .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(theme::pal().ice))
-        .style(Style::default().bg(theme::pal().void));
-    let inner = block.inner(rect);
-    frame.render_widget(Clear, rect);
-    frame.render_widget(block, rect);
-    let key = |k: &str| Span::styled(format!(" {} ", k), keycap_style());
-    let mut lines: Vec<Line> = LOGO
-        .iter()
-        .enumerate()
-        .map(|(i, row)| Line::styled(*row, Style::default().fg(lerp(theme::pal().hot, theme::pal().ice, i as f32 / (LOGO.len() - 1) as f32))))
-        .collect();
+    let p = theme::pal();
+    let inner = crate::hud::draw(frame.buffer_mut(), rect, &crate::hud::Chrome { title: "update", tag: None, hazard: true });
+    if inner.height == 0 {
+        return;
+    }
+    let mut lines: Vec<Line> = vec![Line::default()];
+    lines.extend(
+        LOGO.iter()
+            .enumerate()
+            .map(|(i, row)| Line::styled(*row, Style::default().fg(crate::hud::mix(p.hot, p.ice, i as f32 / (LOGO.len() - 1) as f32)))),
+    );
     lines.push(Line::default());
-    lines.push(Line::styled("update available", Style::default().fg(theme::pal().ice).add_modifier(Modifier::BOLD)));
+    lines.push(Line::styled("A new version of ee is ready.", theme::text()));
     lines.push(Line::from(vec![
         Span::styled(from.clone(), theme::dim()),
-        Span::styled("  →  ", Style::default().fg(theme::pal().hot)),
-        Span::styled(to.clone(), theme::text().add_modifier(Modifier::BOLD)),
+        Span::styled(" ━━▶ ", Style::default().fg(p.hot).add_modifier(Modifier::BOLD)),
+        Span::styled(to.clone(), Style::default().fg(p.ice).add_modifier(Modifier::BOLD)),
     ]));
     lines.push(Line::default());
     if state.has_unsaved() {
-        lines.push(Line::styled("save your changes first (Ctrl+S)", Style::default().fg(theme::pal().amber)));
+        lines.push(Line::styled("save your changes first (Ctrl+S)", Style::default().fg(p.amber).add_modifier(Modifier::BOLD)));
     }
-    lines.push(Line::from(vec![key("Enter"), Span::styled(" restart to update    ", theme::text()), key("Esc"), Span::styled(" keep working", theme::text())]));
-    frame.render_widget(Paragraph::new(lines).alignment(Alignment::Center), inner);
+    frame.render_widget(Paragraph::new(lines).alignment(Alignment::Center), Rect::new(inner.x, inner.y, inner.width, inner.height.saturating_sub(1)));
+    let items = [("Enter", "restart to update"), ("Esc", "keep working")];
+    let need: u16 = items.iter().map(|(k, w)| (k.chars().count() + w.chars().count() + 5) as u16).sum::<u16>() - 2;
+    let x = inner.x + inner.width.saturating_sub(need) / 2;
+    crate::hud::hints(frame.buffer_mut(), Rect::new(x, inner.y + inner.height - 1, inner.width.saturating_sub(x - inner.x), 1), &items);
 }
 
 #[cfg(test)]
@@ -966,13 +986,16 @@ mod tests {
         state.tabs[0] = Document::with_content("t.md", &headings.concat());
         state.apply(crate::keys::Action::FileStructure);
         let rows = render_rows(draw(&state, 80, 24).backend().buffer());
-        assert!(rows.iter().any(|r| r.contains(" file structure ")));
-        assert!(rows.iter().any(|r| r.contains("30/30")));
-        let first = rows.iter().position(|r| r.contains("▌ H1 ")).expect("the first heading is selected");
+        assert!(rows.iter().any(|r| r.contains("╸ FILE STRUCTURE ╺")), "the title is notched into the frame, in capitals");
+        assert!(rows.iter().any(|r| r.contains("╸ 30/30 ╺")), "the count sits on the bottom edge");
+        assert!(rows.iter().any(|r| r.contains(" ↑↓  choose") && r.contains(" Enter  jump") && r.contains(" Esc  close")), "the hint row");
+        let first = rows.iter().position(|r| r.contains("▶ H1 ")).expect("the first heading is selected");
         assert!(rows[first].contains("line 1"));
+        assert_eq!(picker_row(Rect::new(0, 0, 80, 24), &state).map(|r| r.y as usize), Some(first), "the lock-on effect targets the drawn row");
         state.picker.as_mut().unwrap().selected = 25;
         let rows = render_rows(draw(&state, 80, 24).backend().buffer());
-        let selected = rows.iter().position(|r| r.contains("▌ H26")).expect("the selection scrolls into view");
+        let selected = rows.iter().position(|r| r.contains("▶ H26")).expect("the selection scrolls into view");
+        assert_eq!(picker_row(Rect::new(0, 0, 80, 24), &state).map(|r| r.y as usize), Some(selected));
         assert!(!rows[selected + 1].contains(" H27"), "it sits on the last visible row");
         assert!(!rows.iter().any(|r| r.contains(" H11 ")), "rows above the window scrolled away");
     }
@@ -983,9 +1006,18 @@ mod tests {
         let mut state = EditorState::new();
         assert_eq!(modal_rect(area, &state), None);
         state.offer_update("abc1234".into(), "def5678".into());
-        assert_eq!(modal_rect(area, &state), Some(Rect::new(15, 6, 50, 12)));
-        let rows = render_rows(draw(&state, 80, 24).backend().buffer());
-        assert!(rows.iter().any(|r| r.contains("abc1234  →  def5678")));
+        let rect = modal_rect(area, &state).unwrap();
+        assert_eq!(rect, Rect::new(13, 5, 54, 14));
+        let t = draw(&state, 80, 24);
+        let buf = t.backend().buffer();
+        let rows = render_rows(buf);
+        assert!(rows.iter().any(|r| r.contains("abc1234 ━━▶ def5678")));
+        assert!(rows[rect.y as usize].contains("╱╱╱╱╱╱"), "the hazard band marks the one popup that asks for attention");
+        assert!(rows.iter().any(|r| r.contains(" Enter  restart to update") && r.contains(" Esc  keep working")));
+        let corner = |x: u16, y: u16| buf.cell((x, y)).unwrap().symbol().to_string();
+        assert_eq!([corner(rect.x, rect.y), corner(rect.right() - 1, rect.y), corner(rect.x, rect.bottom() - 1), corner(rect.right() - 1, rect.bottom() - 1)], ["┏", "┓", "┗", "┛"]);
+        assert_eq!((buf.cell((rect.right(), rect.y + 2)).unwrap().bg, buf.cell((rect.x + 3, rect.bottom())).unwrap().bg), (crate::hud::shadow_color(), crate::hud::shadow_color()), "it floats on a shadow");
+        assert_ne!(buf.cell((rect.x + 3, rect.y + 1)).unwrap().bg, buf.cell((rect.x + 3, rect.y + 2)).unwrap().bg, "scanlines alternate");
         assert!(!rows.iter().any(|r| r.contains("save your changes first")));
         state.tabs[0].dirty = true;
         let rows = render_rows(draw(&state, 80, 24).backend().buffer());
@@ -1122,14 +1154,20 @@ mod tests {
 
         state.apply(crate::keys::Action::ShowHelp);
         let rows = render_rows(draw(&state, 80, 24).backend().buffer());
-        for name in crate::keys::HELP {
-            let &(_, label, keys) = crate::keys::PALETTE.iter().find(|(n, _, _)| n == name).unwrap();
-            assert!(rows.iter().any(|r| r.contains(label) && r.contains(&format!(" {} ", keys))), "{} with {}", label, keys);
+        for (group, names) in crate::keys::HELP {
+            for (i, name) in names.iter().enumerate() {
+                let &(_, label, keys) = crate::keys::PALETTE.iter().find(|(n, _, _)| n == name).unwrap();
+                let row = rows.iter().find(|r| r.contains(label)).unwrap_or_else(|| panic!("{} is on the sheet", label));
+                assert!(row.contains(&format!(" {} ", keys)), "{} shows {}: {:?}", label, keys, row);
+                let gutter = &row[..row.find(label).unwrap()];
+                assert_eq!(gutter.contains(group), i == 0, "the {} group is named once, on its first row: {:?}", group, row);
+            }
         }
-        for (label, keys) in [("Command palette", "Ctrl+Shift+A"), ("Send lines to herdr", "Alt+Shift+E")] {
+        for (label, keys) in [("Command palette", "Alt+Shift+A"), ("Send lines to herdr", "Alt+Shift+E")] {
             assert!(rows.iter().any(|r| r.contains(label) && r.contains(keys)), "{} is on the sheet", label);
         }
-        assert!(rows.iter().any(|r| r.contains(HELP_FOOTER)));
+        assert!(rows.iter().any(|r| r.contains(" any key  close") && r.contains(" Alt+Shift+A  every action")), "the hint row");
+        assert!(rows.iter().any(|r| r.contains(&format!(" ee {} ", env!("CARGO_PKG_VERSION")))), "the version on the bottom edge");
         assert_eq!(areas(area, &state).popup, help_rect(area, &state), "the sheet gets the popup animation");
         assert!(help_button(Rect::new(0, 0, 30, 10), &state).is_none(), "no button when the bar is too narrow");
         for (w, h) in [(0, 0), (12, 3), (30, 6), (40, 8)] {

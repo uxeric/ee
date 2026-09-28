@@ -3,6 +3,8 @@ mod config;
 mod document;
 mod find;
 mod herdr;
+mod hud;
+mod hyprland;
 mod keys;
 mod markdown;
 mod motion;
@@ -133,7 +135,7 @@ fn run(terminal: &mut Terminal<CrosstermBackend<Stdout>>, state: &mut EditorStat
     if let Some(warning) = warning {
         state.warn(warning);
     } else if !theme_found {
-        state.warn(format!("theme `{}` isn't installed; using neon (Ctrl+` picks another)", missing_theme));
+        state.warn(format!("theme `{}` isn't installed; using neon (Alt+` picks another)", missing_theme));
     }
     let mut double_shift = DoubleShift::default();
     let mut motion = Motion::from_env();

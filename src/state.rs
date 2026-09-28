@@ -36,6 +36,7 @@ pub enum Cue {
     Error,
     Quit,
     PickerOpened,
+    PickerMoved,
     UpdateOffered,
 }
 
@@ -550,6 +551,8 @@ impl EditorState {
             self.mode = Mode::Normal;
             return true;
         };
+        let was = picker.selected;
+        let moving = matches!(action, Action::Up | Action::Down | Action::FindPrevious | Action::FindNext | Action::PageUp | Action::PageDown);
         match action {
             Action::Quit => return self.quit(pending == Some(Pending::Quit)),
             Action::InsertChar(c) => {
@@ -604,6 +607,9 @@ impl EditorState {
                 self.end_theme_preview();
             }
             _ => {}
+        }
+        if moving && self.picker.as_ref().is_some_and(|p| p.selected != was) {
+            self.cues.push(Cue::PickerMoved);
         }
         self.preview_theme();
         true
@@ -776,14 +782,15 @@ impl EditorState {
 
     fn send_to_pane(&mut self, remove: bool) {
         let lines = self.tabs[self.active].caret_lines();
-        match Herdr::from_env().and_then(|h| h.send(&lines.join("\n"))) {
-            Ok(target) if remove => {
+        match Herdr::from_env().and_then(|h| h.send(&lines.join("\n")).map(|sent| (h, sent))) {
+            Ok((herdr, sent)) if remove => {
                 self.active_doc().remove_caret_lines();
-                self.status = format!("moved {} line(s) to {}", lines.len(), target);
+                let followed = crate::hyprland::Hyprland::detect().is_some_and(|desktop| herdr.bring_forward(&sent.pane_id, &desktop));
+                self.status = format!("moved {} line(s) to {}{}", lines.len(), sent.name, if followed { " and switched to it" } else { "" });
                 self.cues.push(Cue::Moved);
             }
-            Ok(target) => {
-                self.status = format!("sent {} line(s) to {}", lines.len(), target);
+            Ok((_, sent)) => {
+                self.status = format!("sent {} line(s) to {}", lines.len(), sent.name);
                 self.cues.push(Cue::Sent);
             }
             Err(e) => self.fail(e),
@@ -1584,7 +1591,12 @@ mod tests {
     #[test]
     fn pickers_run_actions_jump_to_headings_and_open_files() {
         let mut state = state_with(&["hello"]);
-        type_into(&mut state, Action::FindAction, "select all");
+        state.apply(Action::FindAction);
+        state.take_cues();
+        state.apply(Action::Down);
+        assert_eq!(state.take_cues(), vec![Cue::PickerMoved], "moving locks on to the new row");
+        type_text(&mut state, "select all");
+        assert!(state.take_cues().is_empty(), "typing filters without a lock-on");
         assert!(matches!(state.mode, Mode::Picker));
         state.apply(Action::Newline);
         assert!(matches!(state.mode, Mode::Normal));

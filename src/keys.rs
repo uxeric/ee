@@ -138,7 +138,7 @@ impl DoubleShift {
 }
 
 pub const PALETTE: &[(&str, &str, &str)] = &[
-    ("find_action", "Command palette", "Ctrl+Shift+A"),
+    ("find_action", "Command palette", "Alt+Shift+A"),
     ("show_help", "Keyboard shortcuts", "F1"),
     ("save_all", "Save all", "Ctrl+S"),
     ("open_file", "Open or create a file", "Ctrl+N"),
@@ -167,7 +167,7 @@ pub const PALETTE: &[(&str, &str, &str)] = &[
     ("cut", "Cut", "Ctrl+X"),
     ("paste", "Paste", "Ctrl+V"),
     ("undo", "Undo", "Ctrl+Z"),
-    ("redo", "Redo", "Ctrl+Shift+Z"),
+    ("redo", "Redo", "Alt+Shift+Z"),
     ("duplicate_line", "Duplicate line", "Ctrl+D"),
     ("delete_line", "Delete line", "Ctrl+Y"),
     ("move_line_up", "Move line up", "Alt+Shift+Up"),
@@ -186,26 +186,16 @@ pub const PALETTE: &[(&str, &str, &str)] = &[
     ("end_of_file", "End of file", "Ctrl+End"),
     ("send_to_pane", "Send lines to herdr", "Alt+Shift+E"),
     ("move_to_pane", "Move lines to herdr", "Alt+Shift+M"),
-    ("switch_theme", "Switch theme", "Ctrl+`"),
+    ("switch_theme", "Switch theme", "Alt+`"),
     ("quit", "Quit", "Ctrl+Q"),
 ];
 
-pub const HELP: &[&str] = &[
-    "save_all",
-    "open_file",
-    "find",
-    "replace",
-    "find_in_files",
-    "go_to_line",
-    "undo",
-    "redo",
-    "add_caret_down",
-    "select_all_occurrences",
-    "find_action",
-    "send_to_pane",
-    "move_to_pane",
-    "switch_theme",
-    "quit",
+pub const HELP: &[(&str, &[&str])] = &[
+    ("files", &["save_all", "open_file"]),
+    ("find", &["find", "replace", "find_in_files", "go_to_line"]),
+    ("edit", &["undo", "redo", "add_caret_down", "select_all_occurrences"]),
+    ("herdr", &["send_to_pane", "move_to_pane"]),
+    ("ee", &["find_action", "switch_theme", "quit"]),
 ];
 
 impl Action {
@@ -383,12 +373,12 @@ impl Keymap {
 
         match code {
             KeyCode::Char(c) => {
+                let c = if shift && (ctrl || alt) { c.to_ascii_uppercase() } else { c };
                 if ctrl && alt && c == 'l' {
                     Some(Action::Reformat)
                 } else if ctrl && c == '7' {
                     Some(Action::ToggleComment)
                 } else if ctrl {
-                    let c = if shift { c.to_ascii_uppercase() } else { c };
                     Keymap::ctrl_char_action(c).or_else(|| Keymap::ctrl_char_action(c.to_ascii_lowercase()))
                 } else if alt && c == 'A' {
                     Some(Action::FindAction)
@@ -767,6 +757,8 @@ mod tests {
             (event(KeyCode::Char('Z'), true, false, false), Action::Redo),
             (event(KeyCode::Char('z'), true, false, true), Action::Redo),
             (event(KeyCode::Char('Z'), false, true, true), Action::Redo),
+            (event(KeyCode::Char('a'), false, true, true), Action::FindAction),
+            (event(KeyCode::Char('A'), false, true, false), Action::FindAction),
             (event(KeyCode::Char('s'), true, false, true), Action::SaveAll),
             (event(KeyCode::Char('W'), false, true, true), Action::ShrinkSelection),
             (event(KeyCode::Tab, false, false, false), Action::Indent),
