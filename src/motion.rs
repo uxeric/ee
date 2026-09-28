@@ -87,7 +87,7 @@ impl Motion {
                     self.add(Slot::Match, glow.with_area(sel));
                 }
             }
-            Cue::Saved => {
+            Cue::Saved | Cue::Moved => {
                 let beam = fx::sweep_in(Dir::LeftToRight, 24, 0, theme::ICE, (480, Interpolation::QuadOut));
                 self.add(Slot::Status, beam.with_area(areas.status));
             }
@@ -237,7 +237,7 @@ mod tests {
         }
     }
 
-    const ALL: [Cue; 12] = [
+    const ALL: [Cue; 13] = [
         Cue::TabNext,
         Cue::TabPrev,
         Cue::Opened,
@@ -245,6 +245,7 @@ mod tests {
         Cue::Matched,
         Cue::Saved,
         Cue::Sent,
+        Cue::Moved,
         Cue::Warn,
         Cue::Error,
         Cue::Quit,

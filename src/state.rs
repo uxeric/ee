@@ -31,6 +31,7 @@ pub enum Cue {
     Matched,
     Saved,
     Sent,
+    Moved,
     Warn,
     Error,
     Quit,
@@ -80,6 +81,7 @@ pub struct EditorState {
     drag_anchor: Option<(usize, usize)>,
     pub update: Option<(String, String)>,
     pub restart_for_update: bool,
+    pub page_rows: usize,
 }
 
 impl EditorState {
@@ -109,6 +111,7 @@ impl EditorState {
             drag_anchor: None,
             update: None,
             restart_for_update: false,
+            page_rows: 1,
         }
     }
 
@@ -169,6 +172,13 @@ impl EditorState {
         keep
     }
 
+    fn page(&mut self, direction: isize, select: bool) {
+        let rows = direction * self.page_rows.max(1) as isize;
+        let doc = self.active_doc();
+        doc.move_by(|d| d.move_lines(rows), select);
+        doc.scroll_top.set(doc.scroll_top.get().saturating_add_signed(rows));
+    }
+
     fn apply_normal(&mut self, action: Action, pending: Option<Pending>) -> bool {
         match action {
             Action::Quit => return self.quit(pending == Some(Pending::Quit)),
@@ -196,6 +206,10 @@ impl EditorState {
             Action::SelectRight => self.active_doc().move_by(Document::move_right, true),
             Action::SelectUp => self.active_doc().move_by(Document::move_up, true),
             Action::SelectDown => self.active_doc().move_by(Document::move_down, true),
+            Action::PageUp => self.page(-1, false),
+            Action::PageDown => self.page(1, false),
+            Action::SelectPageUp => self.page(-1, true),
+            Action::SelectPageDown => self.page(1, true),
             Action::SelectHome => self.active_doc().move_by(Document::home, true),
             Action::SelectEnd => self.active_doc().move_by(Document::end, true),
             Action::WordLeft => self.active_doc().move_by(Document::word_left, false),
@@ -299,7 +313,8 @@ impl EditorState {
                 self.find_step(false)
             }
             Action::SelectAllOccurrences => self.select_all_occurrences(None),
-            Action::SendToPane => self.send_to_pane(),
+            Action::SendToPane => self.send_to_pane(false),
+            Action::MoveToPane => self.send_to_pane(true),
             Action::FollowLink(url) => self.follow_link(&url),
             Action::NextTab => {
                 self.mark_jump();
@@ -481,6 +496,10 @@ impl EditorState {
             }
             Action::Down | Action::FindNext if !picker.shown.is_empty() => {
                 picker.selected = (picker.selected + 1) % picker.shown.len();
+            }
+            Action::PageUp => picker.selected = picker.selected.saturating_sub(self.page_rows.max(1)),
+            Action::PageDown if !picker.shown.is_empty() => {
+                picker.selected = (picker.selected + self.page_rows.max(1)).min(picker.shown.len() - 1);
             }
             Action::ClearExtraCaret => {
                 self.mode = Mode::Normal;
@@ -677,9 +696,14 @@ impl EditorState {
         }
     }
 
-    fn send_to_pane(&mut self) {
+    fn send_to_pane(&mut self, remove: bool) {
         let lines = self.tabs[self.active].caret_lines();
         match Herdr::from_env().and_then(|h| h.send(&lines.join("\n"))) {
+            Ok(target) if remove => {
+                self.active_doc().remove_caret_lines();
+                self.status = format!("moved {} line(s) to {}", lines.len(), target);
+                self.cues.push(Cue::Moved);
+            }
             Ok(target) => {
                 self.status = format!("sent {} line(s) to {}", lines.len(), target);
                 self.cues.push(Cue::Sent);
@@ -1405,12 +1429,15 @@ mod tests {
     }
 
     #[test]
-    fn send_to_pane_outside_herdr_reports_an_error() {
-        let mut state = state_with(&["ls"]);
-        state.apply(Action::SendToPane);
-        assert_eq!(state.status, "herdr is disabled in tests");
-        assert!(state.alert == Some(Alert::Error));
-        assert_eq!(state.take_cues(), vec![Cue::Error]);
+    fn send_or_move_outside_herdr_reports_an_error_and_keeps_the_lines() {
+        for action in [Action::SendToPane, Action::MoveToPane] {
+            let mut state = state_with(&["ls\npwd"]);
+            state.apply(action);
+            assert_eq!(state.status, "herdr is disabled in tests");
+            assert!(state.alert == Some(Alert::Error));
+            assert_eq!(state.take_cues(), vec![Cue::Error]);
+            assert_eq!((state.tabs[0].lines.clone(), state.tabs[0].dirty), (vec!["ls".to_string(), "pwd".to_string()], false));
+        }
     }
 
     #[test]
@@ -1530,6 +1557,43 @@ mod tests {
         state.apply(Action::NavigateBack);
         assert_eq!(state.active, 0, "the closed tab's entry is skipped");
         assert_eq!(state.tabs[state.active].name, "t0");
+    }
+
+    #[test]
+    fn page_up_and_down_move_every_caret_a_screen_and_select_with_shift() {
+        let text: Vec<String> = (0..30).map(|n| if n == 12 { "x".to_string() } else { format!("line {}", n) }).collect();
+        let mut state = state_with(&[&text.join("\n")]);
+        state.page_rows = 10;
+        state.tabs[0].cursor = (2, 4);
+        state.tabs[0].extra_carets = vec![(3, 1)];
+        state.apply(Action::PageDown);
+        assert_eq!((state.tabs[0].cursor, state.tabs[0].extra_carets.clone()), ((12, 1), vec![(13, 1)]), "the column clamps to a short line");
+        assert_eq!(state.tabs[0].scroll_top.get(), 10, "the view moves with the carets");
+        state.apply(Action::ClearExtraCaret);
+        state.apply(Action::SelectPageDown);
+        assert_eq!(state.tabs[0].selection, Some(((12, 1), (22, 1))));
+        state.apply(Action::PageDown);
+        state.apply(Action::PageDown);
+        assert_eq!(state.tabs[0].cursor, (29, 1), "stops on the last line");
+        state.apply(Action::SelectPageUp);
+        assert_eq!(state.tabs[0].selection, Some(((19, 1), (29, 1))));
+        state.apply(Action::PageUp);
+        state.apply(Action::PageUp);
+        state.apply(Action::PageUp);
+        assert_eq!((state.tabs[0].cursor, state.tabs[0].selection), ((0, 1), None), "stops on the first line");
+
+        state.apply(Action::FindAction);
+        state.page_rows = 5;
+        state.apply(Action::PageDown);
+        assert_eq!(state.picker.as_ref().unwrap().selected, 5, "pickers page through their list");
+        state.apply(Action::PageUp);
+        state.apply(Action::PageUp);
+        assert_eq!(state.picker.as_ref().unwrap().selected, 0, "and stop at the top instead of wrapping");
+        for _ in 0..20 {
+            state.apply(Action::PageDown);
+        }
+        let picker = state.picker.as_ref().unwrap();
+        assert_eq!(picker.selected, picker.shown.len() - 1, "and at the bottom");
     }
 
     #[test]

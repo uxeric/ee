@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+shipped=$(git diff --cached --name-only | grep -vE '\.md$|^assets/readme/' || true)
+[ -z "$shipped" ] && exit 0
+
+version() { sed -n 's/^version = "\(.*\)"$/\1/p' | head -n 1; }
+new=$(git show :Cargo.toml | version)
+old=$(git show HEAD:Cargo.toml 2> /dev/null | version || true)
+[ -z "$old" ] && exit 0
+
+if [ "$new" = "$old" ] || [ "$(printf '%s\n%s\n' "$old" "$new" | sort -V | tail -n 1)" != "$new" ]; then
+    echo "pre-commit: shipped files changed but Cargo.toml's version did not go up (was $old, now $new)." >&2
+    echo "Bump it: x.0.0 for an overhaul, x.y.0 for a feature, x.y.z for anything else, then stage Cargo.toml and Cargo.lock." >&2
+    echo "Changed: $(echo $shipped)" >&2
+    exit 1
+fi

@@ -51,10 +51,15 @@ pub enum Action {
     SelectRight,
     SelectUp,
     SelectDown,
+    PageUp,
+    PageDown,
+    SelectPageUp,
+    SelectPageDown,
     SelectHome,
     SelectEnd,
     InsertText(String),
     SendToPane,
+    MoveToPane,
     StartNewLine,
     WordLeft,
     WordRight,
@@ -176,6 +181,7 @@ pub const PALETTE: &[(&str, &str, &str)] = &[
     ("beginning_of_file", "Start of file", "Ctrl+Home"),
     ("end_of_file", "End of file", "Ctrl+End"),
     ("send_to_pane", "Send lines to herdr", "Alt+Shift+E"),
+    ("move_to_pane", "Move lines to herdr", "Alt+Shift+M"),
     ("quit", "Quit", "Ctrl+Q"),
 ];
 
@@ -221,9 +227,14 @@ impl Action {
             "select_right" => Action::SelectRight,
             "select_up" => Action::SelectUp,
             "select_down" => Action::SelectDown,
+            "page_up" => Action::PageUp,
+            "page_down" => Action::PageDown,
+            "select_page_up" => Action::SelectPageUp,
+            "select_page_down" => Action::SelectPageDown,
             "select_home" => Action::SelectHome,
             "select_end" => Action::SelectEnd,
             "send_to_pane" => Action::SendToPane,
+            "move_to_pane" => Action::MoveToPane,
             "clear_extra_carets" => Action::ClearExtraCaret,
             "join_lines" => Action::JoinLines,
             "reformat" => Action::Reformat,
@@ -359,6 +370,8 @@ impl Keymap {
                     Some(Action::SelectAllOccurrences)
                 } else if alt && c == 'E' {
                     Some(Action::SendToPane)
+                } else if alt && c == 'M' {
+                    Some(Action::MoveToPane)
                 } else if alt && c == 'W' {
                     Some(Action::ShrinkSelection)
                 } else if alt {
@@ -398,6 +411,8 @@ impl Keymap {
             KeyCode::Enter => {
                 if alt {
                     Some(Action::StartNewLineAbove)
+                } else if ctrl && shift {
+                    Some(Action::MoveToPane)
                 } else if ctrl {
                     Some(Action::SendToPane)
                 } else if shift {
@@ -442,6 +457,8 @@ impl Keymap {
             }
             KeyCode::PageUp if ctrl => Some(Action::PreviousTab),
             KeyCode::PageDown if ctrl => Some(Action::NextTab),
+            KeyCode::PageUp if !alt => Some(if select { Action::SelectPageUp } else { Action::PageUp }),
+            KeyCode::PageDown if !alt => Some(if select { Action::SelectPageDown } else { Action::PageDown }),
             KeyCode::F(4) if ctrl => Some(Action::CloseTab),
             KeyCode::F(12) if ctrl => Some(Action::FileStructure),
             KeyCode::F(3) if !ctrl && !alt => {
@@ -681,6 +698,8 @@ mod tests {
             (KeyCode::Right, Action::SelectRight),
             (KeyCode::Up, Action::SelectUp),
             (KeyCode::Down, Action::SelectDown),
+            (KeyCode::PageUp, Action::SelectPageUp),
+            (KeyCode::PageDown, Action::SelectPageDown),
             (KeyCode::Home, Action::SelectHome),
             (KeyCode::End, Action::SelectEnd),
             (KeyCode::F(3), Action::FindPrevious),
@@ -690,11 +709,15 @@ mod tests {
             assert_eq!(km.dispatch(&event(code, false, false, true)), Some(expected));
         }
         assert_eq!(km.dispatch(&event(KeyCode::F(3), false, false, false)), Some(Action::FindNext));
+        assert_eq!(km.dispatch(&event(KeyCode::PageUp, false, false, false)), Some(Action::PageUp));
+        assert_eq!(km.dispatch(&event(KeyCode::PageDown, false, false, false)), Some(Action::PageDown));
         assert_eq!(km.dispatch(&event(KeyCode::F(6), false, false, false)), None);
         assert_eq!(km.dispatch(&event(KeyCode::Char('F'), false, true, true)), Some(Action::FindInFiles));
         assert_eq!(km.dispatch(&event(KeyCode::Char('J'), false, true, true)), Some(Action::SelectAllOccurrences));
         assert_eq!(km.dispatch(&event(KeyCode::Char('E'), false, true, true)), Some(Action::SendToPane));
         assert_eq!(km.dispatch(&event(KeyCode::Enter, true, false, false)), Some(Action::SendToPane));
+        assert_eq!(km.dispatch(&event(KeyCode::Char('M'), false, true, true)), Some(Action::MoveToPane));
+        assert_eq!(km.dispatch(&event(KeyCode::Enter, true, false, true)), Some(Action::MoveToPane));
     }
 
     #[test]

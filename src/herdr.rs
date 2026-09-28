@@ -5,7 +5,6 @@ use std::time::Duration;
 use serde_json::{json, Value};
 
 const TIMEOUT: Duration = Duration::from_millis(500);
-const ENTER_DELAY: Duration = Duration::from_millis(60);
 
 pub struct Herdr {
     socket: String,
@@ -85,13 +84,7 @@ impl Herdr {
     pub fn send(&self, text: &str) -> Result<String, String> {
         let target = self.target()?;
         let id = target["pane_id"].clone();
-        if target["agent"].is_string() {
-            self.call("agent.prompt", json!({ "target": id, "text": text }))?;
-        } else {
-            self.call("pane.send_input", json!({ "pane_id": id, "text": text }))?;
-            std::thread::sleep(ENTER_DELAY);
-            self.call("pane.send_keys", json!({ "pane_id": id, "keys": ["enter"] }))?;
-        }
+        self.call("pane.send_input", json!({ "pane_id": id, "text": text }))?;
         let name = ["label", "agent", "title"]
             .iter()
             .find_map(|k| target[*k].as_str().filter(|s| !s.is_empty()))
@@ -155,20 +148,19 @@ mod tests {
     }
 
     #[test]
-    fn pastes_into_the_other_pane_of_the_tab_then_presses_enter() {
+    fn pastes_into_the_other_pane_of_the_tab_without_pressing_enter() {
         let panes = vec![pane("w1:p1", "t1", None), pane("w1:p2", "t1", None), pane("w1:p3", "t2", None)];
         let (herdr, seen) = fake_herdr(panes, None);
         assert_eq!(herdr.send("ls\npwd"), Ok("w1:p2".to_string()));
-        assert_eq!(methods(&seen), ["pane.get", "pane.list", "pane.send_input", "pane.send_keys"]);
+        assert_eq!(methods(&seen), ["pane.get", "pane.list", "pane.send_input"]);
         let log = seen.lock().unwrap();
         assert_eq!(log[0]["params"], json!({ "pane_id": "w1:p1" }));
         assert_eq!(log[1]["params"], json!({ "workspace_id": "w1" }));
         assert_eq!(log[2]["params"], json!({ "pane_id": "w1:p2", "text": "ls\npwd" }));
-        assert_eq!(log[3]["params"], json!({ "pane_id": "w1:p2", "keys": ["enter"] }));
     }
 
     #[test]
-    fn agent_panes_get_a_prompt_and_neighbors_break_ties() {
+    fn agent_panes_get_the_same_paste_and_neighbors_break_ties() {
         let panes = vec![
             pane("w1:p1", "t1", None),
             pane("w1:p2", "t1", None),
@@ -178,9 +170,9 @@ mod tests {
         assert_eq!(herdr.send("fix it"), Ok("claude".to_string()));
         let log = seen.lock().unwrap();
         assert!(log.iter().filter(|r| r["method"] == "pane.neighbor").all(|r| r["params"]["pane_id"] == "w1:p1"));
-        let prompt = log.iter().find(|r| r["method"] == "agent.prompt").unwrap();
-        assert_eq!(prompt["params"], json!({ "target": "w1:p3", "text": "fix it" }));
-        assert!(log.iter().all(|r| r["method"] != "pane.send_input"));
+        let sent = log.iter().find(|r| r["method"] == "pane.send_input").unwrap();
+        assert_eq!(sent["params"], json!({ "pane_id": "w1:p3", "text": "fix it" }));
+        assert!(log.iter().all(|r| r["method"] != "agent.prompt"), "agent.prompt would submit it");
     }
 
     #[test]
@@ -190,7 +182,7 @@ mod tests {
         let (mut herdr, seen) = fake_herdr(vec![pane("w1:p1", "t1", None), focused], None);
         herdr.pane = None;
         assert_eq!(herdr.send("make test"), Ok("w2:p4".to_string()));
-        assert_eq!(methods(&seen), ["pane.current", "pane.send_input", "pane.send_keys"]);
+        assert_eq!(methods(&seen), ["pane.current", "pane.send_input"]);
         assert_eq!(seen.lock().unwrap()[1]["params"], json!({ "pane_id": "w2:p4", "text": "make test" }));
     }
 

@@ -322,11 +322,19 @@ fn visible_top(doc: &Document, height: usize) -> usize {
     let top = if doc.view_anchor.get() == anchor {
         doc.scroll_top.get().min(max_top(doc, height))
     } else {
-        scroll_for(doc.scroll_top.get(), doc.cursor.0, height)
+        scroll_for(doc.scroll_top.get(), doc.cursor.0, height).min(max_top(doc, height))
     };
     doc.view_anchor.set(anchor);
     doc.scroll_top.set(top);
     top
+}
+
+pub fn page_rows(area: Rect, state: &EditorState) -> usize {
+    let rows = match popup_rect(area, state) {
+        Some(popup) => popup.height.saturating_sub(3),
+        None => editor_rect_for(area, state.mode).height,
+    };
+    rows.max(1) as usize
 }
 
 pub fn scroll_view(area: Rect, state: &EditorState, lines: isize) {
@@ -922,5 +930,38 @@ mod tests {
         let row: String = render_rows(t.backend().buffer())[3].clone();
         let x = row.find("beta").unwrap() as u16;
         assert_eq!(t.backend().buffer().cell((x, 3)).unwrap().bg, theme::MATCH, "matches show on rendered markdown too");
+    }
+
+    #[test]
+    fn paging_keeps_the_caret_on_its_screen_row_and_never_scrolls_past_the_end() {
+        let text: Vec<String> = (0..40).map(|n| format!("row{}", n)).collect();
+        let mut state = EditorState::new();
+        state.tabs[0] = Document::with_content("t", &text.join("\n"));
+        state.tabs[0].cursor = (3, 0);
+        let area = Rect::new(0, 0, 30, 12);
+        state.page_rows = page_rows(area, &state);
+        let height = editor_rect_for(area, state.mode).height as usize;
+        assert_eq!(state.page_rows, height);
+        let caret_row = |state: &EditorState| {
+            let rows = render_rows(draw(state, 30, 12).backend().buffer());
+            let caret = rows.iter().position(|r| r.contains(&format!("row{} ", state.tabs[0].cursor.0))).unwrap();
+            (caret, rows)
+        };
+        let (before, _) = caret_row(&state);
+        state.apply(crate::keys::Action::PageDown);
+        let (after, rows) = caret_row(&state);
+        assert_eq!(state.tabs[0].cursor.0, 3 + height);
+        assert_eq!(after, before, "the caret keeps its row on screen: {:?}", rows);
+        for _ in 0..5 {
+            state.apply(crate::keys::Action::PageDown);
+        }
+        let rows = render_rows(draw(&state, 30, 12).backend().buffer());
+        let last = rows.iter().rposition(|r| r.contains("row")).unwrap();
+        assert!(rows[last].contains("row39 "), "the last line sits at the bottom: {:?}", rows);
+        assert_eq!(rows.iter().filter(|r| r.contains("row")).count(), height, "no empty rows below the end");
+
+        state.apply(crate::keys::Action::FindAction);
+        let popup = popup_rect(area, &state).unwrap();
+        assert_eq!(page_rows(area, &state), popup.height as usize - 3, "pickers page by their visible rows");
     }
 }

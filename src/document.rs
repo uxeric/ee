@@ -508,7 +508,7 @@ impl Document {
         }
     }
 
-    pub fn move_by(&mut self, movement: fn(&mut Document), select: bool) {
+    pub fn move_by(&mut self, movement: impl Fn(&mut Document), select: bool) {
         self.occurrences.clear();
         if select {
             let anchor = match self.selection {
@@ -566,23 +566,17 @@ impl Document {
     }
 
     pub fn move_up(&mut self) {
-        let (line, col) = self.cursor;
-        if line > 0 {
-            let new_line = line - 1;
-            let max_col = self.lines[new_line].chars().count();
-            let new = (new_line, col.min(max_col));
-                self.cursor = new;
-        }
+        self.move_lines(-1);
     }
 
     pub fn move_down(&mut self) {
+        self.move_lines(1);
+    }
+
+    pub fn move_lines(&mut self, delta: isize) {
         let (line, col) = self.cursor;
-        if line + 1 < self.lines.len() {
-            let new_line = line + 1;
-            let max_col = self.lines[new_line].chars().count();
-            let new = (new_line, col.min(max_col));
-                self.cursor = new;
-        }
+        let target = line.saturating_add_signed(delta).min(self.lines.len() - 1);
+        self.cursor = (target, col.min(self.lines[target].chars().count()));
     }
 
     /// Remove a caret position from `extra_carets` so the invariant holds:
@@ -1188,12 +1182,32 @@ impl Document {
             || self.selection.is_some_and(|((sl, _), (el, _))| sl <= line && line <= el)
     }
 
-    pub fn caret_lines(&self) -> Vec<String> {
+    fn caret_line_indexes(&self) -> Vec<usize> {
         let mut lines: Vec<usize> = self.extra_carets.iter().map(|&(l, _)| l).collect();
         lines.push(self.cursor.0);
         lines.sort();
         lines.dedup();
-        lines.into_iter().map(|l| self.lines[l].clone()).collect()
+        lines
+    }
+
+    pub fn caret_lines(&self) -> Vec<String> {
+        self.caret_line_indexes().into_iter().map(|l| self.lines[l].clone()).collect()
+    }
+
+    pub fn remove_caret_lines(&mut self) {
+        let lines = self.caret_line_indexes();
+        self.snapshot();
+        for &l in lines.iter().rev() {
+            self.lines.remove(l);
+        }
+        if self.lines.is_empty() {
+            self.lines.push(String::new());
+        }
+        self.extra_carets.clear();
+        self.selection = None;
+        self.occurrences.clear();
+        let line = lines[0].min(self.lines.len() - 1);
+        self.cursor = (line, self.cursor.1.min(self.lines[line].chars().count()));
     }
 
     pub fn selected_text(&self) -> Option<String> {
@@ -1902,6 +1916,28 @@ mod tests {
         d.cursor = (1, 0);
         d.extra_carets = vec![(2, 0), (0, 1)];
         assert_eq!(d.caret_lines(), vec!["ls", "pwd", "echo hi"], "top to bottom whatever the caret order");
+    }
+
+    #[test]
+    fn removing_caret_lines_takes_every_caret_line_in_one_undo_step() {
+        let mut d = doc_with("ls\nkeep\npwd\nmake\nend");
+        d.cursor = (2, 2);
+        d.extra_carets = vec![(0, 1), (3, 0)];
+        d.selection = Some(((0, 0), (0, 1)));
+        d.remove_caret_lines();
+        assert_eq!(d.lines, vec!["keep", "end"]);
+        assert_eq!((d.cursor, d.extra_carets.clone(), d.selection), ((0, 2), vec![], None), "one caret where the first line was");
+        assert!(d.dirty);
+        d.undo();
+        assert_eq!(d.lines, vec!["ls", "keep", "pwd", "make", "end"]);
+
+        let mut d = doc_with("only");
+        d.remove_caret_lines();
+        assert_eq!((d.lines.clone(), d.cursor), (vec![String::new()], (0, 0)), "the last line leaves an empty document");
+        let mut d = doc_with("a\nlast");
+        d.cursor = (1, 3);
+        d.remove_caret_lines();
+        assert_eq!((d.lines.clone(), d.cursor), (vec!["a".to_string()], (0, 1)), "removing the bottom line lands on the one above");
     }
 
     #[test]

@@ -39,16 +39,11 @@ The project is `eoe`, the command is `ee`. Type it, jack in, edit text in neon.
 curl -fsSL https://raw.githubusercontent.com/uxeric/ee/HEAD/install.sh | bash
 ```
 
-The installer builds `ee` from source and installs it for you, no root needed. Run the same command again to update: it pulls the latest source, rebuilds, and tells you which version it updated from and to. If you're already up to date it says so and skips the build, and your config is never touched.
+It builds `ee` from source into `~/.local/bin/ee`, no root needed, and offers to install Rust if you don't have it. On Omarchy it also adds `ee` to the app launcher. It writes `~/.config/eoe/config.toml` once and never overwrites it. Run the same command again to update.
 
-1. **Rust:** it checks for Rust 1.91 or newer. If Rust is missing, it asks before installing it: on Omarchy with Omarchy's own `omarchy-install-dev-env rust`, elsewhere with `pacman` or [rustup](https://rustup.rs).
-2. **Source:** it downloads the source into `~/.local/share/eoe/src`, or builds the checkout it's run from.
-3. **Binary:** it compiles a release build and installs it as `~/.local/bin/ee`.
-4. **Config:** it writes a commented `~/.config/eoe/config.toml`, but only if you don't have one. Your config is never overwritten.
-5. **Omarchy:** on Omarchy it also adds `ee`, with its own icon, to the app launcher (<kbd>Super</kbd>+<kbd>Space</kbd>, then type `ee`) through `omarchy-tui-install`, so it opens tiled in your terminal like any other Omarchy TUI. Updating an older install replaces its "Eric's Own Editor" entry.
-6. **PATH:** it warns if `~/.local/bin` isn't on your `PATH`, or if another `ee` comes first (hello, Easy Editor).
+Then run `ee notes.md`. A file that doesn't exist yet is created on the first save. <kbd>Ctrl</kbd>+<kbd>Q</kbd> quits.
 
-You need a terminal that passes `Ctrl` and `Alt` through: Alacritty, kitty, Ghostty, foot and WezTerm all do.
+`ee` checks for updates in the background and offers to restart into a new version; `ee --update` updates by hand and `ee --version` shows what you have. You need a terminal that passes `Ctrl` and `Alt` through: Alacritty, kitty, Ghostty, foot and WezTerm all do.
 
 <details>
 <summary><b>From a clone, uninstalling, and installer settings</b></summary>
@@ -76,16 +71,7 @@ Prefer doing it by hand? `cargo build --release && install -Dm755 target/release
 
 </details>
 
-Then run `ee notes.md`. If the file doesn't exist yet, `ee` opens it empty and the first save creates it. `Ctrl+Q` quits, and asks for a second press if something is unsaved. `EOE_NO_FX=1 ee` turns off every animation.
-
-**Staying up to date.** `ee` opens straight into your files. In the background it checks whether a newer version has been pushed. If there is one, a small popup offers it: <kbd>Enter</kbd> restarts into the update, and <kbd>Esc</kbd> keeps working. It won't restart over unsaved changes. You can also update by hand:
-
-```sh
-ee --update      # download, build and install the latest version
-ee --version     # the installed version
-```
-
-`EOE_NO_UPDATE_CHECK=1` turns the background check off.
+`EOE_NO_FX=1` turns off every animation, and `EOE_NO_UPDATE_CHECK=1` turns off the update check.
 
 <img src="assets/readme/divider.svg" width="100%" alt="">
 
@@ -93,19 +79,9 @@ ee --version     # the installed version
 
 ### Markdown that renders while you write it
 
-In `.md` files, every line is shown rendered except the lines you're editing. The caret's line, and any line in a selection, show their raw source, so you always edit the real text. One source line is always one row, so nothing jumps around.
+In `.md` files, every line is rendered except the one you're editing, which shows its raw source. One source line is always one row, so nothing jumps around.
 
-- **Headings** lose their `#`s and take a colour per level.
-- **Bold**, *italic*, ~~strikethrough~~ and `code` lose their markers; links show only their text.
-- **Lists** get `•` `◦` `▪` bullets by depth; tasks become `□` and `✓`.
-- **Quotes** get a `▌` bar, rules become a full-width line, and fenced code gets a labelled rule over a tinted body.
-- **Tables** line up. Columns follow `:---`, `:---:` and `---:` alignment, and columns of numbers right-align on their own. The header sits on a violet band over a double cyan rule, and body rows are zebra-striped.
-- **Alerts** (`> [!NOTE]`, `[!TIP]`, `[!IMPORTANT]`, `[!WARNING]`, `[!CAUTION]`) become coloured callouts with an icon and a label.
-- **Code blocks** are highlighted by language: shell, TOML, Rust, Python, JavaScript and more. In `diff` blocks, added lines are cyan and removed lines magenta.
-- **HTML** the way GitHub shows it: `<kbd>` as keycaps; `<b>`, `<i>`, `<code>`, `<sub>` styled; `<summary>` as a `▸` header; `<div align="center">` content centred. `<br>`, comments and wrapper tags disappear.
-- **Images** become a `◩ alt text` placeholder, and a decorative image with an empty `alt` becomes a thin rule. Shields.io badges are drawn as two-tone text badges in their own colours, without any network access.
-
-`Alt`+Click on a rendered line lands on the character you clicked. `Ctrl`+Click on a link follows it: `#anchors` jump to that heading, relative paths open in a new tab (`other.md#section` jumps too), and web links open in your browser. The recording at the top is a real session: `- [ ] jack out` is typed raw and becomes a checkbox the moment the caret moves on; then <kbd>Ctrl</kbd>+<kbd>F12</kbd> lists the headings, typing `cr` finds *Crew*, and <kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>←</kbd> jumps back.
+Headings, emphasis, lists, checkboxes, quotes, tables, GitHub alerts, code blocks (highlighted by language), common HTML and shields.io badges all render. Images show as a placeholder. <kbd>Ctrl</kbd>+Click follows a link: to a heading, another file, or your browser.
 
 ### Many carets, one keystroke
 
@@ -115,7 +91,7 @@ In `.md` files, every line is shown rendered except the lines you're editing. Th
 
 ### Send lines to herdr
 
-With [herdr](https://herdr.dev) running, `Alt+Shift+E` sends the caret's line to a herdr pane and presses Enter. With several carets, it sends every caret's line, top to bottom, as one paste. If herdr sees an agent such as Claude in that pane, the lines arrive as a prompt.
+With [herdr](https://herdr.dev) running, `Alt+Shift+E` pastes the caret's line into a herdr pane without pressing Enter, so you can check it, edit it, or send more before you run it. With several carets, it pastes every caret's line, top to bottom, as one paste. Agents such as Claude get the same paste in their prompt box. `Alt+Shift+M` moves the lines instead: they're sent the same way, then removed from your file (one `Ctrl+Z` brings them back). If the send fails, nothing is removed.
 
 - **Inside herdr:** the lines go to the other pane in `ee`'s tab. If the tab has several, `ee` tries the neighbour to the right, then left, below and above. It never sends to its own pane or to other tabs.
 - **Outside herdr** (`ee` in a plain terminal): the lines go to whichever herdr pane is focused.
@@ -142,7 +118,7 @@ The sent lines answer back: a magenta write head sweeps each one, breaking it in
 | Opening a file | The text decodes in with a cyan glow |
 | Jumping to a match | The match flashes magenta |
 | Opening the find bar | The bar sweeps in |
-| Saving | A cyan beam crosses the status bar |
+| Saving, or moving lines to herdr | A cyan beam crosses the status bar |
 | Sending to herdr | Each sent line is packetized by a magenta write head and re-forms in cyan |
 | A warning | The status bar flashes amber |
 | An error | The status bar glitches red |
@@ -189,6 +165,7 @@ Terminals can't tell `Ctrl+X` from `Ctrl+Shift+X`, so WebStorm's `Ctrl+Shift+let
 | Start a new line below, from anywhere in the line (keeps its indentation) | <kbd>Shift</kbd>+<kbd>Enter</kbd> | — |
 | Move left / right / up / down | arrow keys | — |
 | Move by word | <kbd>Ctrl</kbd>+<kbd>←</kbd> / <kbd>Ctrl</kbd>+<kbd>→</kbd> | — |
+| Page up / down: every caret moves a screen and the view follows | <kbd>PageUp</kbd> / <kbd>PageDown</kbd> | — |
 | Beginning / end of file | <kbd>Ctrl</kbd>+<kbd>Home</kbd> / <kbd>Ctrl</kbd>+<kbd>End</kbd> | — |
 | Select while moving | <kbd>Shift</kbd> + any of the moves above (<kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>→</kbd> selects by word) | — |
 | Extend selection: word, then quotes or brackets, line, paragraph, whole file | <kbd>Ctrl</kbd>+<kbd>W</kbd> | <kbd>Alt</kbd>+<kbd>W</kbd> |
@@ -276,7 +253,7 @@ In the replace bar, <kbd>Tab</kbd> switches between the Find and Replace fields.
 | Go to line (`42`, or `42:7` for a column) | <kbd>Ctrl</kbd>+<kbd>G</kbd> / <kbd>Alt</kbd>+<kbd>G</kbd> |
 | Back / forward through your jumps, across tabs | <kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>←</kbd> / <kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>→</kbd> |
 
-- In the file finder, command palette and file structure popups: type to fuzzy-filter, <kbd>↑</kbd>/<kbd>↓</kbd> to choose, <kbd>Enter</kbd> to open or run, <kbd>Esc</kbd> to close. In the file finder, a path that starts with `/`, `~` or `.` opens exactly that file, creating it if it's new.
+- In the file finder, command palette and file structure popups: type to fuzzy-filter, <kbd>↑</kbd>/<kbd>↓</kbd> or <kbd>PageUp</kbd>/<kbd>PageDown</kbd> to choose, <kbd>Enter</kbd> to open or run, <kbd>Esc</kbd> to close. In the file finder, a path that starts with `/`, `~` or `.` opens exactly that file, creating it if it's new.
 - Jumps are what back and forward remember: go to line, find, following a link, start or end of file, switching tabs and opening files.
 - Tab switching wraps around.
 - Closing a tab with unsaved changes shows a warning; press <kbd>Ctrl</kbd>+<kbd>F4</kbd> again right away to discard them. Closing the last tab quits.
@@ -291,9 +268,10 @@ In the replace bar, <kbd>Tab</kbd> switches between the Find and Replace fields.
 
 | Action | Key |
 |---|---|
-| Send the caret's line (every caret's line with multi-cursor) to the other herdr pane and press Enter | <kbd>Alt</kbd>+<kbd>Shift</kbd>+<kbd>E</kbd> / <kbd>Ctrl</kbd>+<kbd>Enter</kbd> |
+| Send the caret's line (every caret's line with multi-cursor) to the other herdr pane, without pressing Enter | <kbd>Alt</kbd>+<kbd>Shift</kbd>+<kbd>E</kbd> / <kbd>Ctrl</kbd>+<kbd>Enter</kbd> |
+| Move those lines to the herdr pane: send them, then remove them from the file | <kbd>Alt</kbd>+<kbd>Shift</kbd>+<kbd>M</kbd> / <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>Enter</kbd> |
 
-<kbd>Ctrl</kbd>+<kbd>Enter</kbd> needs a terminal with the kitty keyboard protocol; <kbd>Alt</kbd>+<kbd>Shift</kbd>+<kbd>E</kbd> works everywhere.
+<kbd>Ctrl</kbd>+<kbd>Enter</kbd> and <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>Enter</kbd> need a terminal with the kitty keyboard protocol; the <kbd>Alt</kbd>+<kbd>Shift</kbd> keys work everywhere.
 
 </details>
 
@@ -314,7 +292,7 @@ These code-editor keys are bound and show "not applicable":
 
 When the terminal supports the kitty keyboard protocol (Alacritty, kitty, Ghostty, foot and WezTerm do), `ee` turns it on. That's what makes <kbd>Ctrl</kbd>+<kbd>[</kbd> (otherwise the same key as <kbd>Esc</kbd>) and the double <kbd>Shift</kbd> tap work. <kbd>Ctrl</kbd>+<kbd>]</kbd> works in any terminal. Start with `EOE_LEGACY_KEYS=1` to use the classic key encoding instead, and try that first if typing accents with dead keys or an input method misbehaves.
 
-`Shift+Enter`, `Ctrl+Shift+W`, `Ctrl+Shift+A` and `Ctrl+Shift+Backspace` need the kitty keyboard protocol, because classic terminals send them as plain `Enter`, `Ctrl+W`, `Ctrl+A` (select all) and `Ctrl+Backspace` (delete word). Their fallbacks work everywhere: `Alt+Shift+W` shrinks the selection and `Alt+Shift+A` opens the command palette. `Ctrl+/` arrives as `Ctrl+7` in classic terminals, and both work. `Ctrl+Space` (code completion) isn't bound. `Ctrl+Enter` (send to herdr pane) also needs the kitty keyboard protocol.
+`Shift+Enter`, `Ctrl+Shift+W`, `Ctrl+Shift+A` and `Ctrl+Shift+Backspace` need the kitty keyboard protocol, because classic terminals send them as plain `Enter`, `Ctrl+W`, `Ctrl+A` (select all) and `Ctrl+Backspace` (delete word). Their fallbacks work everywhere: `Alt+Shift+W` shrinks the selection and `Alt+Shift+A` opens the command palette. `Ctrl+/` arrives as `Ctrl+7` in classic terminals, and both work. `Ctrl+Space` (code completion) isn't bound. `Ctrl+Enter` and `Ctrl+Shift+Enter` (send and move to a herdr pane) also need the kitty keyboard protocol.
 
 </details>
 
@@ -342,7 +320,7 @@ If the file has a mistake, `ee` starts with the defaults and the status bar says
 <details>
 <summary><b>Action names</b></summary>
 
-`quit` `backspace` `newline` `left` `right` `up` `down` `home` `end` `beginning_of_file` `end_of_file` `beginning_of_line` `end_of_line` `delete_word` `delete_char` `duplicate_line` `delete_line` `move_line_up` `move_line_down` `add_caret_up` `add_caret_down` `delete_word_forward` `delete_word_backward` `undo` `redo` `copy` `paste` `cut` `save_all` `find` `find_in_files` `find_next` `find_previous` `replace` `select_all_occurrences` `select_left` `select_right` `select_up` `select_down` `select_home` `select_end` `send_to_pane` `clear_extra_carets` `join_lines` `reformat` `rename` `open_file` `next_tab` `previous_tab` `close_tab` `start_new_line` `word_left` `word_right` `select_word_left` `select_word_right` `select_to_file_start` `select_to_file_end` `extend_selection` `shrink_selection` `indent` `unindent` `go_to_line` `navigate_back` `navigate_forward` `select_all` `toggle_case` `toggle_comment` `find_action` `file_structure` `last_edit_location` `start_new_line_above`
+`quit` `backspace` `newline` `left` `right` `up` `down` `home` `end` `beginning_of_file` `end_of_file` `beginning_of_line` `end_of_line` `delete_word` `delete_char` `duplicate_line` `delete_line` `move_line_up` `move_line_down` `add_caret_up` `add_caret_down` `delete_word_forward` `delete_word_backward` `undo` `redo` `copy` `paste` `cut` `save_all` `find` `find_in_files` `find_next` `find_previous` `replace` `select_all_occurrences` `select_left` `select_right` `select_up` `select_down` `page_up` `page_down` `select_page_up` `select_page_down` `select_home` `select_end` `send_to_pane` `move_to_pane` `clear_extra_carets` `join_lines` `reformat` `rename` `open_file` `next_tab` `previous_tab` `close_tab` `start_new_line` `word_left` `word_right` `select_word_left` `select_word_right` `select_to_file_start` `select_to_file_end` `extend_selection` `shrink_selection` `indent` `unindent` `go_to_line` `navigate_back` `navigate_forward` `select_all` `toggle_case` `toggle_comment` `find_action` `file_structure` `last_edit_location` `start_new_line_above`
 
 </details>
 

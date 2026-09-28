@@ -182,6 +182,7 @@ fn run(terminal: &mut Terminal<CrosstermBackend<Stdout>>, state: &mut EditorStat
                 continue;
             }
         }
+        state.page_rows = ui::page_rows(area, state);
         let event = read()?;
         if quitting {
             continue;
