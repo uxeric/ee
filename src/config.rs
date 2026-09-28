@@ -25,7 +25,7 @@ impl KeyBinding {
 
 pub struct Config {
     pub fallback_enabled: bool,
-    pub follow_omarchy_theme: bool,
+    pub theme: String,
     pub remaps: HashMap<Action, KeyBinding>,
 }
 
@@ -33,7 +33,7 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             fallback_enabled: true,
-            follow_omarchy_theme: true,
+            theme: "omarchy".to_string(),
             remaps: HashMap::new(),
         }
     }
@@ -63,6 +63,23 @@ pub fn load_from(path: &Path) -> (Config, Option<String>) {
     }
 }
 
+pub fn save_theme(path: &Path, choice: &str) -> std::io::Result<()> {
+    let text = std::fs::read_to_string(path).unwrap_or_default();
+    let setting = format!("theme = {}", toml::Value::String(choice.to_string()));
+    let mut lines: Vec<String> = text.lines().map(str::to_string).collect();
+    let first_table = lines.iter().position(|l| l.trim_start().starts_with('['));
+    let existing = lines[..first_table.unwrap_or(lines.len())].iter().position(|l| l.split('=').next().map(str::trim) == Some("theme"));
+    match (existing, first_table) {
+        (Some(i), _) => lines[i] = setting,
+        (None, Some(t)) => lines.splice(t..t, [setting, String::new()]).for_each(drop),
+        (None, None) => lines.push(setting),
+    }
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    std::fs::write(path, lines.join("\n") + "\n")
+}
+
 pub fn parse(text: &str) -> Result<Config, String> {
     let table: toml::Table = text.parse().map_err(|e: toml::de::Error| e.message().to_string())?;
     let mut config = Config::default();
@@ -76,11 +93,9 @@ pub fn parse(text: &str) -> Result<Config, String> {
                     config.remaps.insert(action, parse_key(spec)?);
                 }
             }
-            ("theme", toml::Value::String(name)) if name == "omarchy" || name == "neon" => {
-                config.follow_omarchy_theme = name == "omarchy"
-            }
+            ("theme", toml::Value::String(name)) if !name.trim().is_empty() => config.theme = name.trim().to_string(),
             ("alt_fallback", _) => return Err("`alt_fallback` must be true or false".to_string()),
-            ("theme", _) => return Err("`theme` must be \"omarchy\" or \"neon\"".to_string()),
+            ("theme", _) => return Err("`theme` must be \"omarchy\", \"neon\" or an Omarchy theme name".to_string()),
             _ => return Err(format!("unknown setting `{}`", key)),
         }
     }
@@ -178,7 +193,8 @@ mod tests {
             ("[keys]\nfind = \"hyper+f\"", "cannot read key `hyper+f`"),
             ("[keys]\nfind = 3", "`find` needs a key"),
             ("alt_fallback = \"yes\"", "must be true or false"),
-            ("theme = \"blue\"", "`theme` must be \"omarchy\" or \"neon\""),
+            ("theme = 3", "`theme` must be \"omarchy\", \"neon\" or an Omarchy theme name"),
+            ("theme = \" \"", "`theme` must be"),
             ("colour = \"neon\"", "unknown setting `colour`"),
             ("alt_fallback = ", ""),
         ];
@@ -198,13 +214,31 @@ mod tests {
     }
 
     #[test]
+    fn saving_a_theme_rewrites_only_its_own_line() {
+        let dir = std::env::temp_dir().join(format!("ee-save-theme-{}", std::process::id()));
+        let file = dir.join("eoe/config.toml");
+        save_theme(&file, "neon").unwrap();
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "theme = \"neon\"\n", "creates the file and its folder");
+        let mine = "# my notes\nalt_fallback = false\n# theme = \"old\"\n\n[keys]\nfind = \"f2\"\n";
+        std::fs::write(&file, mine).unwrap();
+        save_theme(&file, "tokyo-night").unwrap();
+        let saved = std::fs::read_to_string(&file).unwrap();
+        assert_eq!(saved, "# my notes\nalt_fallback = false\n# theme = \"old\"\n\ntheme = \"tokyo-night\"\n\n[keys]\nfind = \"f2\"\n", "goes above the first table, comments kept");
+        save_theme(&file, "omarchy").unwrap();
+        let config = parse(&std::fs::read_to_string(&file).unwrap()).unwrap();
+        assert_eq!((config.theme.as_str(), config.fallback_enabled, config.remaps.len()), ("omarchy", false, 1), "replaced in place, the rest untouched");
+        assert_eq!(std::fs::read_to_string(&file).unwrap().matches("theme = ").count(), 2, "one setting plus the comment");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
     fn the_installer_writes_a_config_ee_accepts() {
         let script = include_str!("../install.sh");
         let start = script.find("<< 'EOF'\n").expect("installer config heredoc") + "<< 'EOF'\n".len();
         let end = start + script[start..].find("\nEOF\n").expect("heredoc end");
         let config = parse(&script[start..end]).unwrap();
-        assert!(config.fallback_enabled && config.follow_omarchy_theme && config.remaps.is_empty());
-        assert!(!parse("theme = \"neon\"").unwrap().follow_omarchy_theme);
+        assert!(config.fallback_enabled && config.theme == "omarchy" && config.remaps.is_empty());
+        assert_eq!(parse("theme = \"tokyo-night\"").unwrap().theme, "tokyo-night");
     }
 
     #[test]

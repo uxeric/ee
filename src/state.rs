@@ -81,7 +81,13 @@ pub struct EditorState {
     drag_anchor: Option<(usize, usize)>,
     pub update: Option<(String, String)>,
     pub restart_for_update: bool,
+    pub help: bool,
     pub page_rows: usize,
+    pub theme: crate::theme::ThemeFile,
+    pub theme_roots: crate::theme::Roots,
+    pub theme_choice: String,
+    pub config_path: Option<std::path::PathBuf>,
+    theme_before: Option<crate::theme::Palette>,
 }
 
 impl EditorState {
@@ -111,7 +117,13 @@ impl EditorState {
             drag_anchor: None,
             update: None,
             restart_for_update: false,
+            help: false,
             page_rows: 1,
+            theme: crate::theme::ThemeFile::default(),
+            theme_roots: crate::theme::Roots::default(),
+            theme_choice: "omarchy".to_string(),
+            config_path: None,
+            theme_before: None,
         }
     }
 
@@ -156,6 +168,15 @@ impl EditorState {
         let pending = self.pending.take();
         if self.update.is_some() {
             return self.apply_update_offer(action, pending);
+        }
+        if self.help {
+            self.help = false;
+            return true;
+        }
+        if action == Action::ShowHelp {
+            self.help = true;
+            self.cues.push(Cue::PickerOpened);
+            return true;
         }
         let before = (self.tabs[self.active].id, self.tabs[self.active].rev());
         let keep = match self.mode {
@@ -253,6 +274,7 @@ impl EditorState {
             },
             Action::FindAction => self.open_picker(PickerKind::Actions),
             Action::FileStructure => self.open_picker(PickerKind::Structure),
+            Action::SwitchTheme => self.open_picker(PickerKind::Themes),
             Action::ClickAt(line, col, clicks) => {
                 let doc = self.active_doc();
                 doc.click_at(line, col, clicks);
@@ -422,7 +444,45 @@ impl EditorState {
         true
     }
 
+    pub fn use_theme(&mut self, choice: &str) -> bool {
+        let path = self.theme_roots.colors(choice);
+        let known = matches!(choice, "neon" | "omarchy") || path.is_some();
+        self.theme_choice = if known { choice.to_string() } else { "neon".to_string() };
+        self.theme.switch(path);
+        known
+    }
+
+    fn end_theme_preview(&mut self) {
+        if let Some(palette) = self.theme_before.take() {
+            crate::theme::set(palette);
+        }
+    }
+
+    fn preview_theme(&mut self) {
+        let Some(picker) = self.picker.as_ref().filter(|p| p.kind == PickerKind::Themes) else {
+            return;
+        };
+        if let Some(PickTarget::Theme(choice)) = picker.shown.get(picker.selected).map(|(i, _)| &picker.items[*i].target) {
+            crate::theme::set(crate::theme::load(self.theme_roots.colors(choice).as_deref()));
+        }
+    }
+
+    fn choose_theme(&mut self, choice: String) {
+        self.theme_before = None;
+        self.use_theme(&choice);
+        let name = match choice.as_str() {
+            "omarchy" => "follows Omarchy".to_string(),
+            other => other.to_string(),
+        };
+        match self.config_path.clone().map(|p| crate::config::save_theme(&p, &choice)) {
+            Some(Err(e)) => self.warn(format!("theme: {}, but config.toml wasn't saved: {}", name, e)),
+            Some(Ok(())) => self.status = format!("theme: {} (saved to config.toml)", name),
+            None => self.status = format!("theme: {}", name),
+        }
+    }
+
     fn open_picker(&mut self, kind: PickerKind) {
+        self.end_theme_preview();
         let items: Vec<PickItem> = match kind {
             PickerKind::Actions => crate::keys::PALETTE
                 .iter()
@@ -457,6 +517,16 @@ impl EditorState {
                 }
                 items
             }
+            PickerKind::Themes => {
+                self.theme_before = Some(crate::theme::pal());
+                let theme = |label: &str, detail: String, choice: &str| PickItem { label: label.to_string(), detail, target: PickTarget::Theme(choice.to_string()) };
+                let mut items = vec![
+                    theme("Follow Omarchy", self.theme_roots.current_name().unwrap_or_default(), "omarchy"),
+                    theme("Neon", "ee's own".to_string(), "neon"),
+                ];
+                items.extend(self.theme_roots.installed().into_iter().map(|(name, yours)| theme(&name, if yours { "yours".to_string() } else { String::new() }, &name)));
+                items
+            }
             PickerKind::Files => {
                 let root = std::env::current_dir().unwrap_or_default();
                 list_files(&root)
@@ -467,6 +537,9 @@ impl EditorState {
         };
         let mut picker = Picker { kind, input: String::new(), items, shown: Vec::new(), selected: 0 };
         picker.refilter();
+        if let Some(current) = picker.shown.iter().position(|(i, _)| matches!(&picker.items[*i].target, PickTarget::Theme(c) if *c == self.theme_choice)) {
+            picker.selected = current;
+        }
         self.picker = Some(picker);
         self.mode = Mode::Picker;
         self.cues.push(Cue::PickerOpened);
@@ -504,10 +577,12 @@ impl EditorState {
             Action::ClearExtraCaret => {
                 self.mode = Mode::Normal;
                 self.picker = None;
+                self.end_theme_preview();
             }
             Action::FindAction => self.open_picker(PickerKind::Actions),
             Action::FileStructure => self.open_picker(PickerKind::Structure),
             Action::OpenFile => self.open_picker(PickerKind::Files),
+            Action::SwitchTheme => self.open_picker(PickerKind::Themes),
             Action::Newline => {
                 let picker = self.picker.take().unwrap();
                 self.mode = Mode::Normal;
@@ -522,12 +597,15 @@ impl EditorState {
                         self.active_doc().go_to(line, 0);
                     }
                     (_, Some(PickTarget::File(path))) => self.open_path(&path),
+                    (_, Some(PickTarget::Theme(choice))) => self.choose_theme(choice),
                     (PickerKind::Files, None) if !typed.is_empty() => self.open_path(&expand_home(&typed)),
                     _ => {}
                 }
+                self.end_theme_preview();
             }
             _ => {}
         }
+        self.preview_theme();
         true
     }
 
@@ -971,6 +1049,7 @@ pub enum PickerKind {
     Actions,
     Structure,
     Files,
+    Themes,
 }
 
 #[derive(Clone)]
@@ -978,6 +1057,7 @@ enum PickTarget {
     Action(Action),
     Line(usize),
     File(String),
+    Theme(String),
 }
 
 #[derive(Clone)]
@@ -1594,6 +1674,77 @@ mod tests {
         }
         let picker = state.picker.as_ref().unwrap();
         assert_eq!(picker.selected, picker.shown.len() - 1, "and at the bottom");
+    }
+
+    #[test]
+    fn the_theme_picker_previews_live_restores_on_esc_and_saves_on_enter() {
+        use crate::theme::{pal, Roots, NEON_PALETTE};
+        use ratatui::style::Color;
+        let dir = Scratch::new("themes");
+        let theme = |rel: &str, background: &str| {
+            let folder = dir.0.join(rel);
+            fs::create_dir_all(&folder).unwrap();
+            fs::write(folder.join("colors.toml"), format!("background = \"{}\"\nforeground = \"#ffffff\"\n", background)).unwrap();
+        };
+        theme("user/amber", "#110000");
+        theme("system/amber", "#ffffff");
+        theme("system/blue", "#000011");
+        theme("current/theme", "#001100");
+        fs::write(dir.0.join("current/theme.name"), "blue\n").unwrap();
+        let config = dir.path("config.toml");
+        let mut state = state_with(&["x"]);
+        state.theme_roots = Roots { user: Some(dir.0.join("user")), system: Some(dir.0.join("system")), current: Some(dir.0.join("current")) };
+        state.config_path = Some(config.clone().into());
+        assert!(state.use_theme("neon"));
+        let background = || pal().void;
+
+        state.apply(Action::SwitchTheme);
+        let picker = state.picker.as_ref().unwrap();
+        let rows: Vec<(String, String)> = (0..picker.total()).map(|i| (picker.item(i).label.clone(), picker.item(i).detail.clone())).collect();
+        assert_eq!(rows, [("Follow Omarchy", "blue"), ("Neon", "ee's own"), ("amber", "yours"), ("blue", "")].map(|(l, d)| (l.to_string(), d.to_string())));
+        assert_eq!(picker.selected, 1, "opens on the theme in use");
+        state.apply(Action::Down);
+        assert_eq!(background(), Color::Rgb(0x11, 0, 0), "moving previews the theme, yours over the built-in one");
+        state.apply(Action::ClearExtraCaret);
+        assert_eq!((pal(), state.theme_choice.as_str()), (NEON_PALETTE, "neon"), "Esc puts the old colours back");
+        assert!(!Path::new(&config).exists(), "Esc saves nothing");
+
+        type_into(&mut state, Action::SwitchTheme, "blu");
+        assert_eq!(background(), Color::Rgb(0, 0, 0x11), "filtering previews the first match");
+        state.apply(Action::Newline);
+        assert_eq!((state.theme_choice.as_str(), state.status.as_str()), ("blue", "theme: blue (saved to config.toml)"));
+        assert_eq!(crate::config::parse(&fs::read_to_string(&config).unwrap()).unwrap().theme, "blue");
+        assert_eq!(background(), Color::Rgb(0, 0, 0x11));
+        state.apply(Action::SwitchTheme);
+        assert_eq!(state.picker.as_ref().unwrap().selected, 3, "reopens on the chosen theme");
+        state.apply(Action::ClearExtraCaret);
+
+        type_into(&mut state, Action::SwitchTheme, "follow");
+        state.apply(Action::Newline);
+        assert_eq!((background(), state.status.as_str()), (Color::Rgb(0, 0x11, 0), "theme: follows Omarchy (saved to config.toml)"));
+        assert_eq!(crate::config::parse(&fs::read_to_string(&config).unwrap()).unwrap().theme, "omarchy");
+
+        assert!(!state.use_theme("gone"), "an uninstalled name is reported");
+        assert_eq!((pal(), state.theme_choice.as_str()), (NEON_PALETTE, "neon"));
+    }
+
+    #[test]
+    fn help_opens_from_any_mode_and_the_next_key_only_closes_it() {
+        let mut state = state_with(&["abc"]);
+        state.apply(Action::ShowHelp);
+        assert!(state.help);
+        assert_eq!(state.take_cues(), vec![Cue::PickerOpened]);
+        state.apply(Action::InsertChar('x'));
+        assert!(!state.help, "any key closes it");
+        assert_eq!(state.tabs[0].lines, vec!["abc"], "and does nothing else");
+        state.apply(Action::Find);
+        state.apply(Action::ShowHelp);
+        assert!(state.help && matches!(state.mode, Mode::Find), "F1 works in the find bar too");
+        state.apply(Action::ShowHelp);
+        assert!(!state.help, "F1 again closes it");
+        state.apply(Action::ShowHelp);
+        assert!(state.apply(Action::Quit), "Ctrl+Q with the sheet open only closes it");
+        assert!(!state.help);
     }
 
     #[test]

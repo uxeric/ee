@@ -148,7 +148,8 @@ write_config() {
 # Let Alt+letter do what Ctrl+letter does.
 alt_fallback = true
 
-# "omarchy" follows your Omarchy theme's colours; "neon" keeps ee's own palette.
+# "omarchy" follows your Omarchy theme's colours, "neon" keeps ee's own palette,
+# and a theme name such as "tokyo-night" pins that theme. Ctrl+` in ee picks one.
 theme = "omarchy"
 
 # Give an action an extra key. The default keys keep working.

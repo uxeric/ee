@@ -100,7 +100,11 @@ pub fn from_omarchy(colors_toml: &str) -> Option<Palette> {
     let neon = pick(&["green", "bright_green"], &[ice], ice);
     let amber = pick(&["yellow", "orange", "bright_yellow"], &[], hot);
     let error = pick(&["red", "bright_red"], &[], hot);
-    let selection = get("selection").filter(|s| distance(*s, background) >= 24.0).unwrap_or(mix(background, hot, 0.3));
+    let cursor_line = tint(0.06);
+    let selection = (7..=11)
+        .map(|step| mix(background, hot, step as f32 * 0.05))
+        .find(|s| distance(*s, background) >= 72.0 && distance(*s, cursor_line) >= 56.0)
+        .unwrap_or(mix(background, hot, 0.55));
     Some(Palette {
         ice: rgb(ice),
         hot: rgb(hot),
@@ -111,7 +115,7 @@ pub fn from_omarchy(colors_toml: &str) -> Option<Palette> {
         void: rgb(background),
         selection: rgb(selection),
         find_match: rgb(mix(background, ice, 0.3)),
-        cursor_line: rgb(tint(0.06)),
+        cursor_line: rgb(cursor_line),
         code_bg: rgb(tint(0.09)),
         table_head: rgb(mix(background, violet, 0.25)),
         table_stripe: rgb(tint(0.04)),
@@ -121,29 +125,84 @@ pub fn from_omarchy(colors_toml: &str) -> Option<Palette> {
     })
 }
 
-pub struct OmarchyTheme {
+#[derive(Clone, Debug, Default)]
+pub struct Roots {
+    pub user: Option<PathBuf>,
+    pub system: Option<PathBuf>,
+    pub current: Option<PathBuf>,
+}
+
+impl Roots {
+    pub fn from_env() -> Self {
+        let home = std::env::var_os("HOME").map(PathBuf::from);
+        let omarchy = std::env::var_os("OMARCHY_PATH").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("/usr/share/omarchy"));
+        Self {
+            user: home.as_ref().map(|h| h.join(".config/omarchy/themes")),
+            system: Some(omarchy.join("themes")),
+            current: home.map(|h| h.join(".local/state/omarchy/current")),
+        }
+    }
+
+    pub fn colors(&self, choice: &str) -> Option<PathBuf> {
+        match choice {
+            "neon" => None,
+            "omarchy" => self.current.as_ref().map(|c| c.join("theme/colors.toml")),
+            name => [&self.user, &self.system].into_iter().flatten().map(|d| d.join(name).join("colors.toml")).find(|p| p.is_file()),
+        }
+    }
+
+    pub fn installed(&self) -> Vec<(String, bool)> {
+        let mut found: Vec<(String, bool)> = Vec::new();
+        for (dir, yours) in [(&self.user, true), (&self.system, false)] {
+            let Some(entries) = dir.as_ref().and_then(|d| std::fs::read_dir(d).ok()) else { continue };
+            for entry in entries.flatten() {
+                let name = entry.file_name().to_string_lossy().to_string();
+                if entry.path().join("colors.toml").is_file() && !found.iter().any(|(n, _)| *n == name) {
+                    found.push((name, yours));
+                }
+            }
+        }
+        found.sort();
+        found
+    }
+
+    pub fn current_name(&self) -> Option<String> {
+        let name = std::fs::read_to_string(self.current.as_ref()?.join("theme.name")).ok()?;
+        Some(name.trim().to_string()).filter(|n| !n.is_empty())
+    }
+}
+
+pub fn load(path: Option<&std::path::Path>) -> Palette {
+    path.and_then(|p| std::fs::read_to_string(p).ok()).as_deref().and_then(from_omarchy).unwrap_or(NEON_PALETTE)
+}
+
+fn modified(path: Option<&std::path::Path>) -> Option<SystemTime> {
+    std::fs::metadata(path?).and_then(|m| m.modified()).ok()
+}
+
+#[derive(Default)]
+pub struct ThemeFile {
     path: Option<PathBuf>,
     seen: Option<SystemTime>,
 }
 
-impl OmarchyTheme {
-    pub fn new(follow: bool) -> Self {
-        let path = std::env::var_os("HOME")
-            .filter(|_| follow)
-            .map(|home| PathBuf::from(home).join(".local/state/omarchy/current/theme/colors.toml"));
-        Self { path, seen: None }
+impl ThemeFile {
+    pub fn switch(&mut self, path: Option<PathBuf>) {
+        self.seen = modified(path.as_deref());
+        set(load(path.as_deref()));
+        self.path = path;
     }
 
     pub fn refresh(&mut self) -> bool {
-        let Some(path) = &self.path else {
-            return false;
-        };
-        let modified = std::fs::metadata(path).and_then(|m| m.modified()).ok();
-        if modified == self.seen {
+        if self.path.is_none() {
             return false;
         }
-        self.seen = modified;
-        let palette = std::fs::read_to_string(path).ok().as_deref().and_then(from_omarchy).unwrap_or(NEON_PALETTE);
+        let now = modified(self.path.as_deref());
+        if now == self.seen {
+            return false;
+        }
+        self.seen = now;
+        let palette = load(self.path.as_deref());
         let changed = palette != pal();
         set(palette);
         changed
@@ -196,8 +255,20 @@ mod tests {
             Color::Rgb(0x47, 0xac, 0x3a),
         ));
         assert_eq!(p.violet, Color::Rgb(0x42, 0x91, 0xba), "blue is the accent and magenta is taken, so Important gets the colour furthest from both");
-        assert_eq!(p.selection, Color::Rgb(0x2c, 0x27, 0x27));
         assert_eq!(p.cursor_line, Color::Rgb(35, 29, 29), "tints are mixed from the theme's own background");
+    }
+
+    #[test]
+    fn selections_stand_out_from_the_background_and_the_caret_line_in_every_palette() {
+        let apart = |a: Color, b: Color| match (a, b) {
+            (Color::Rgb(r1, g1, b1), Color::Rgb(r2, g2, b2)) => distance((r1, g1, b1), (r2, g2, b2)),
+            _ => 0.0,
+        };
+        let light = "background = \"#eff1f5\"\nforeground = \"#4c4f69\"\naccent = \"#1e66f5\"\nmagenta = \"#ea76cb\"\n";
+        for (name, p) in [("neon", NEON_PALETTE), ("night-city", from_omarchy(NIGHT_CITY).unwrap()), ("light", from_omarchy(light).unwrap())] {
+            assert!(apart(p.selection, p.void) >= 70.0, "{}: selection vs background {}", name, apart(p.selection, p.void));
+            assert!(apart(p.selection, p.cursor_line) >= 55.0, "{}: selection vs caret line {}", name, apart(p.selection, p.cursor_line));
+        }
     }
 
     #[test]
@@ -210,19 +281,47 @@ mod tests {
     }
 
     #[test]
-    fn following_a_theme_reloads_only_when_its_file_changes() {
+    fn themes_are_found_by_name_and_reload_only_when_their_file_changes() {
         let dir = std::env::temp_dir().join(format!("ee-theme-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("colors.toml");
-        std::fs::write(&path, NIGHT_CITY).unwrap();
-        let mut theme = OmarchyTheme { path: Some(path.clone()), seen: None };
-        assert!(theme.refresh());
-        assert_eq!(pal().void, Color::Rgb(0x15, 0x0f, 0x0f));
+        let _ = std::fs::remove_dir_all(&dir);
+        let write = |rel: &str, text: &str| {
+            let path = dir.join(rel);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(&path, text).unwrap();
+            path
+        };
+        let mine = write("user/mine/colors.toml", "background = \"#000000\"\nforeground = \"#ffffff\"\n");
+        let yours = write("user/night-city/colors.toml", NIGHT_CITY);
+        write("system/night-city/colors.toml", "background = \"#ffffff\"\nforeground = \"#000000\"\n");
+        let tokyo = write("system/tokyo/colors.toml", NIGHT_CITY);
+        write("system/broken/readme.txt", "no colors here");
+        let current = write("current/theme/colors.toml", NIGHT_CITY);
+        write("current/theme.name", "night-city\n");
+        let roots = Roots { user: Some(dir.join("user")), system: Some(dir.join("system")), current: Some(dir.join("current")) };
+
+        assert_eq!(roots.installed(), vec![("mine".to_string(), true), ("night-city".to_string(), true), ("tokyo".to_string(), false)], "yours win, folders without colors.toml are skipped");
+        assert_eq!(roots.colors("night-city"), Some(yours));
+        assert_eq!(roots.colors("tokyo"), Some(tokyo));
+        assert_eq!((roots.colors("nope"), roots.colors("neon")), (None, None));
+        assert_eq!(roots.colors("omarchy"), Some(current.clone()));
+        assert_eq!(roots.current_name().as_deref(), Some("night-city"));
+        assert_eq!(Roots::default().installed(), vec![], "no folders, no themes");
+
+        let mut theme = ThemeFile::default();
+        theme.switch(Some(current.clone()));
+        assert_eq!(pal().void, Color::Rgb(0x15, 0x0f, 0x0f), "switching applies the theme at once");
         assert!(!theme.refresh(), "an unchanged file is not reloaded");
-        std::fs::remove_file(&path).unwrap();
+        std::fs::write(&current, std::fs::read_to_string(&mine).unwrap()).unwrap();
+        std::fs::File::options().write(true).open(&current).unwrap().set_modified(SystemTime::UNIX_EPOCH).unwrap();
+        assert!(theme.refresh(), "a changed file is reloaded");
+        assert_eq!(pal().void, Color::Rgb(0, 0, 0));
+        std::fs::remove_file(&current).unwrap();
         assert!(theme.refresh(), "a removed theme goes back to neon");
         assert_eq!(pal(), NEON_PALETTE);
-        assert!(!OmarchyTheme::new(false).refresh(), "theme = \"neon\" never reads the file");
+        theme.switch(Some(mine));
+        theme.switch(None);
+        assert_eq!(pal(), NEON_PALETTE, "neon needs no file");
+        assert!(!theme.refresh());
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }

@@ -146,7 +146,8 @@ Terminals can't tell `Ctrl+X` from `Ctrl+Shift+X`, so WebStorm's `Ctrl+Shift+let
 | Select all | <kbd>Ctrl</kbd>+<kbd>A</kbd> | Toggle comment | <kbd>Ctrl</kbd>+<kbd>/</kbd> |
 | Go to line | <kbd>Ctrl</kbd>+<kbd>G</kbd> | Back / forward | <kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>←</kbd> <kbd>→</kbd> |
 | Indent / unindent | <kbd>Tab</kbd> / <kbd>Shift</kbd>+<kbd>Tab</kbd> | Start new line | <kbd>Shift</kbd>+<kbd>Enter</kbd> |
-| Send to herdr | <kbd>Alt</kbd>+<kbd>Shift</kbd>+<kbd>E</kbd> | Quit | <kbd>Ctrl</kbd>+<kbd>Q</kbd> |
+| Send to herdr | <kbd>Alt</kbd>+<kbd>Shift</kbd>+<kbd>E</kbd> | Switch theme | <kbd>Ctrl</kbd>+<kbd>`</kbd> / <kbd>Alt</kbd>+<kbd>`</kbd> |
+| Quit | <kbd>Ctrl</kbd>+<kbd>Q</kbd> | Keyboard shortcuts | <kbd>F1</kbd>, or click **F1 help** in the status bar |
 
 <details>
 <summary><b>Editing and movement</b></summary>
@@ -245,6 +246,8 @@ In the replace bar, <kbd>Tab</kbd> switches between the Find and Replace fields.
 | Open or create a file: fuzzy-find files under the current folder, or type a path | <kbd>Ctrl</kbd>+<kbd>N</kbd> / <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>N</kbd> / <kbd>Alt</kbd>+<kbd>N</kbd> |
 | File structure: jump to a markdown heading | <kbd>Ctrl</kbd>+<kbd>F12</kbd> |
 | Command palette: every action, with its keys | <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>A</kbd> / <kbd>Alt</kbd>+<kbd>Shift</kbd>+<kbd>A</kbd> |
+| Keyboard shortcuts: a sheet of the basics, including herdr and the command palette (any key closes it) | <kbd>F1</kbd>, or click **F1 help** at the bottom right |
+| Switch theme: Follow Omarchy, Neon, or any installed Omarchy theme, previewed as you move | <kbd>Ctrl</kbd>+<kbd>`</kbd> / <kbd>Alt</kbd>+<kbd>`</kbd> |
 | Last edit location | <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>Backspace</kbd> |
 | Rename the file, or save an untitled tab under a name | <kbd>Shift</kbd>+<kbd>F6</kbd> |
 | Next tab | <kbd>Ctrl</kbd>+<kbd>]</kbd> / <kbd>Alt</kbd>+<kbd>→</kbd> / <kbd>Ctrl</kbd>+<kbd>PageDown</kbd> |
@@ -253,7 +256,7 @@ In the replace bar, <kbd>Tab</kbd> switches between the Find and Replace fields.
 | Go to line (`42`, or `42:7` for a column) | <kbd>Ctrl</kbd>+<kbd>G</kbd> / <kbd>Alt</kbd>+<kbd>G</kbd> |
 | Back / forward through your jumps, across tabs | <kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>←</kbd> / <kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>→</kbd> |
 
-- In the file finder, command palette and file structure popups: type to fuzzy-filter, <kbd>↑</kbd>/<kbd>↓</kbd> or <kbd>PageUp</kbd>/<kbd>PageDown</kbd> to choose, <kbd>Enter</kbd> to open or run, <kbd>Esc</kbd> to close. In the file finder, a path that starts with `/`, `~` or `.` opens exactly that file, creating it if it's new.
+- In the file finder, command palette, file structure and theme popups: type to fuzzy-filter, <kbd>↑</kbd>/<kbd>↓</kbd> or <kbd>PageUp</kbd>/<kbd>PageDown</kbd> to choose, <kbd>Enter</kbd> to open or run, <kbd>Esc</kbd> to close. In the theme popup, `ee` recolours as you move; <kbd>Enter</kbd> keeps the theme and saves it to your config, <kbd>Esc</kbd> puts the old one back. In the file finder, a path that starts with `/`, `~` or `.` opens exactly that file, creating it if it's new.
 - Jumps are what back and forward remember: go to line, find, following a link, start or end of file, switching tabs and opening files.
 - Tab switching wraps around.
 - Closing a tab with unsaved changes shows a warning; press <kbd>Ctrl</kbd>+<kbd>F4</kbd> again right away to discard them. Closing the last tab quits.
@@ -292,7 +295,7 @@ These code-editor keys are bound and show "not applicable":
 
 When the terminal supports the kitty keyboard protocol (Alacritty, kitty, Ghostty, foot and WezTerm do), `ee` turns it on. That's what makes <kbd>Ctrl</kbd>+<kbd>[</kbd> (otherwise the same key as <kbd>Esc</kbd>) and the double <kbd>Shift</kbd> tap work. <kbd>Ctrl</kbd>+<kbd>]</kbd> works in any terminal. Start with `EOE_LEGACY_KEYS=1` to use the classic key encoding instead, and try that first if typing accents with dead keys or an input method misbehaves.
 
-`Shift+Enter`, `Ctrl+Shift+W`, `Ctrl+Shift+A`, `Ctrl+Shift+Z` and `Ctrl+Shift+Backspace` need the kitty keyboard protocol, because classic terminals send them as plain `Enter`, `Ctrl+W`, `Ctrl+A` (select all), `Ctrl+Z` (undo) and `Ctrl+Backspace` (delete word). Their fallbacks work everywhere: `Alt+Shift+W` shrinks the selection, `Alt+Shift+A` opens the command palette and `Alt+Shift+Z` redoes. `Ctrl+/` arrives as `Ctrl+7` in classic terminals, and both work. `Ctrl+Space` (code completion) isn't bound. `Ctrl+Enter` and `Ctrl+Shift+Enter` (send and move to a herdr pane) also need the kitty keyboard protocol.
+`Shift+Enter`, `Ctrl+Shift+W`, `Ctrl+Shift+A`, `Ctrl+Shift+Z` and `Ctrl+Shift+Backspace` need the kitty keyboard protocol, because classic terminals send them as plain `Enter`, `Ctrl+W`, `Ctrl+A` (select all), `Ctrl+Z` (undo) and `Ctrl+Backspace` (delete word). Their fallbacks work everywhere: `Alt+Shift+W` shrinks the selection, `Alt+Shift+A` opens the command palette and `Alt+Shift+Z` redoes. `Ctrl+/` arrives as `Ctrl+7` in classic terminals, and both work. `Ctrl+Space` (code completion) isn't bound. `Ctrl+Enter` and `Ctrl+Shift+Enter` (send and move to a herdr pane) and ``Ctrl+` `` (switch theme) also need the kitty keyboard protocol; ``Alt+` `` works everywhere.
 
 </details>
 
@@ -306,7 +309,8 @@ When the terminal supports the kitty keyboard protocol (Alacritty, kitty, Ghostt
 # Let Alt+letter do what Ctrl+letter does. Default: true.
 alt_fallback = true
 
-# "omarchy" (the default) follows your Omarchy theme's colours; "neon" keeps ee's own palette.
+# "omarchy" (the default) follows your Omarchy theme's colours, "neon" keeps ee's own
+# palette, and a theme name such as "tokyo-night" pins that Omarchy theme. Ctrl+` sets it for you.
 theme = "omarchy"
 
 # Give an action an extra key. The default keys keep working.
@@ -318,14 +322,14 @@ beginning_of_file = "ctrl+home"   # works in terminals with the kitty keyboard p
 
 Keys are written like `ctrl+s`, `alt+shift+f`, `shift+f6`, `f3`, `ctrl+enter` or `pageup`. The modifiers are `ctrl`, `alt` and `shift`. The named keys are `enter`, `esc`, `tab`, `backspace`, `delete`, `up`, `down`, `left`, `right`, `home`, `end`, `pageup`, `pagedown`, `space` and `f1` to `f12`.
 
-With `theme = "omarchy"`, `ee` reads the current theme's `colors.toml` (in `~/.local/state/omarchy/current/theme/`) and maps its accent, colours, foreground and background onto its own roles. Switch themes and `ee` recolours the next time you come back to it. Without Omarchy, or with `theme = "neon"`, you get the neon palette.
+With `theme = "omarchy"`, `ee` reads the current theme's `colors.toml` (in `~/.local/state/omarchy/current/theme/`) and maps its accent, colours, foreground and background onto its own roles. Switch themes and `ee` recolours the next time you come back to it. Without Omarchy, or with `theme = "neon"`, you get the neon palette. A theme name uses that theme's colours whatever Omarchy is set to; `ee` looks for it in `~/.config/omarchy/themes/` first, then in Omarchy's own themes. The theme picker (<kbd>Ctrl</kbd>+<kbd>`</kbd>) writes this one line and leaves the rest of the file alone.
 
 If the file has a mistake, `ee` starts with the defaults and the status bar says what it couldn't read, for example ``config: unknown action `teleport` (using defaults)``.
 
 <details>
 <summary><b>Action names</b></summary>
 
-`quit` `backspace` `newline` `left` `right` `up` `down` `home` `end` `beginning_of_file` `end_of_file` `beginning_of_line` `end_of_line` `delete_word` `delete_char` `duplicate_line` `delete_line` `move_line_up` `move_line_down` `add_caret_up` `add_caret_down` `delete_word_forward` `delete_word_backward` `undo` `redo` `copy` `paste` `cut` `save_all` `find` `find_in_files` `find_next` `find_previous` `replace` `select_all_occurrences` `select_left` `select_right` `select_up` `select_down` `page_up` `page_down` `select_page_up` `select_page_down` `select_home` `select_end` `send_to_pane` `move_to_pane` `clear_extra_carets` `join_lines` `reformat` `rename` `open_file` `next_tab` `previous_tab` `close_tab` `start_new_line` `word_left` `word_right` `select_word_left` `select_word_right` `select_to_file_start` `select_to_file_end` `extend_selection` `shrink_selection` `indent` `unindent` `go_to_line` `navigate_back` `navigate_forward` `select_all` `toggle_case` `toggle_comment` `find_action` `file_structure` `last_edit_location` `start_new_line_above`
+`quit` `backspace` `newline` `left` `right` `up` `down` `home` `end` `beginning_of_file` `end_of_file` `beginning_of_line` `end_of_line` `delete_word` `delete_char` `duplicate_line` `delete_line` `move_line_up` `move_line_down` `add_caret_up` `add_caret_down` `delete_word_forward` `delete_word_backward` `undo` `redo` `copy` `paste` `cut` `save_all` `find` `find_in_files` `find_next` `find_previous` `replace` `select_all_occurrences` `select_left` `select_right` `select_up` `select_down` `page_up` `page_down` `select_page_up` `select_page_down` `select_home` `select_end` `send_to_pane` `move_to_pane` `clear_extra_carets` `join_lines` `reformat` `rename` `open_file` `next_tab` `previous_tab` `close_tab` `start_new_line` `word_left` `word_right` `select_word_left` `select_word_right` `select_to_file_start` `select_to_file_end` `extend_selection` `shrink_selection` `indent` `unindent` `go_to_line` `navigate_back` `navigate_forward` `select_all` `toggle_case` `toggle_comment` `find_action` `show_help` `file_structure` `switch_theme` `last_edit_location` `start_new_line_above`
 
 </details>
 
@@ -379,6 +383,7 @@ Every animation in this README is a real `ee` session: the renderer drew each fr
 cargo test                 # the unit tests
 cargo run -- notes.md      # the debug build
 EOE_NO_FX=1 cargo run      # the debug build, no animations
+python3 tools/ptydrive.py  # type and save through a real pty, classic and kitty keys
 ```
 
 `TODO.md` has the implementation plan and task-by-task notes.

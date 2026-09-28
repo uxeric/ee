@@ -583,8 +583,14 @@ impl Document {
         extras.retain(|p| *p != self.cursor);
         self.extra_carets = extras;
         selected.sort();
-        selected.dedup();
-        self.occurrences = selected;
+        let mut merged: Vec<(usize, usize, usize)> = Vec::new();
+        for (l, s, e) in selected {
+            match merged.last_mut() {
+                Some(last) if last.0 == l && s < last.2 => last.2 = last.2.max(e),
+                _ => merged.push((l, s, e)),
+            }
+        }
+        self.occurrences = merged;
     }
 
     pub fn move_left(&mut self) {
@@ -1604,6 +1610,10 @@ mod tests {
         d.move_by(Document::move_left, true);
         assert_eq!(d.selection, Some(((0, 1), (0, 2))));
         assert_eq!(d.cursor, (0, 1));
+        d.move_by(Document::end, true);
+        assert_eq!(d.selection, Some(((0, 2), (0, 5))), "shift+end from the anchor");
+        d.move_by(Document::home, true);
+        assert_eq!((d.selection, d.cursor), (Some(((0, 0), (0, 2))), (0, 0)), "shift+home crosses back over it");
     }
 
     #[test]
@@ -1612,8 +1622,9 @@ mod tests {
         d.cursor = (0, 1);
         d.extra_carets = vec![(1, 1), (2, 1)];
         d.selection = Some(((0, 0), (0, 1)));
+        d.occurrences = vec![(1, 0, 1), (2, 0, 1)];
         d.move_by(Document::move_right, false);
-        assert_eq!(d.selection, None);
+        assert_eq!((d.selection, d.occurrences.clone()), (None, vec![]), "plain movement deselects every caret");
         assert_eq!(d.cursor, (0, 2));
         assert_eq!(d.extra_carets, vec![(1, 2), (2, 2)]);
         d.move_by(Document::home, false);
@@ -2007,52 +2018,90 @@ mod tests {
     }
 
     #[test]
-    fn shift_home_and_end_select_at_every_caret_and_shrink_back() {
-        let mut d = doc_with("abc def\n  ghi jkl");
-        d.cursor = (0, 3);
-        d.extra_carets = vec![(1, 5)];
-        d.move_by(Document::end, true);
-        assert_eq!(d.occurrences, vec![(0, 3, 7), (1, 5, 9)]);
-        assert_eq!((d.cursor, d.extra_carets.clone()), ((0, 7), vec![(1, 9)]));
-        d.move_by(Document::home, true);
-        assert_eq!(d.occurrences, vec![(0, 0, 3), (1, 2, 5)], "back past each anchor, to the first non-blank");
-        d.move_by(Document::end, true);
-        d.move_by(Document::home, true);
-        d.move_by(Document::end, true);
-        assert_eq!(d.occurrences, vec![(0, 3, 7), (1, 5, 9)]);
-        assert_eq!(d.copy_text(), (" def\n jkl".to_string(), false), "copy takes every selection");
-        d.move_by(Document::move_left, true);
-        d.move_by(Document::move_left, true);
-        d.move_by(Document::move_left, true);
-        d.move_by(Document::move_left, true);
-        assert!(d.occurrences.is_empty(), "a caret back on its anchor selects nothing");
-        assert_eq!((d.cursor, d.extra_carets.clone()), ((0, 3), vec![(1, 5)]));
+    fn shift_moves_select_from_each_carets_anchor() {
+        type Move = fn(&mut Document);
+        struct Case<'a> {
+            name: &'static str,
+            text: &'static str,
+            carets: &'static [(usize, usize)],
+            before: &'static [(usize, usize, usize)],
+            moves: &'a [Move],
+            selected: &'static [(usize, usize, usize)],
+            after: &'static [(usize, usize)],
+        }
+        let (end, home, down, left): (Move, Move, Move, Move) = (Document::end, Document::home, Document::move_down, Document::move_left);
+        let cases = [
+            Case { name: "shift+end at every caret", text: "abc def\n  ghi jkl", carets: &[(0, 3), (1, 5)], before: &[], moves: &[end], selected: &[(0, 3, 7), (1, 5, 9)], after: &[(0, 7), (1, 9)] },
+            Case { name: "shift+home goes back past each anchor to the first non-blank", text: "abc def\n  ghi jkl", carets: &[(0, 3), (1, 5)], before: &[], moves: &[end, home], selected: &[(0, 0, 3), (1, 2, 5)], after: &[(0, 0), (1, 2)] },
+            Case { name: "shift+home twice reaches column 0", text: "  ab\n  cd", carets: &[(0, 4), (1, 4)], before: &[], moves: &[home, home], selected: &[(0, 0, 4), (1, 0, 4)], after: &[(0, 0), (1, 0)] },
+            Case { name: "shift+end then shift+home shrinks back to nothing", text: "ab\ncd", carets: &[(0, 0), (1, 0)], before: &[], moves: &[end, home], selected: &[], after: &[(0, 0), (1, 0)] },
+            Case { name: "shift+left back onto the anchor deselects", text: "abc\nabc", carets: &[(0, 1), (1, 1)], before: &[], moves: &[end, left, left], selected: &[], after: &[(0, 1), (1, 1)] },
+            Case { name: "carets that meet share one selection", text: "abcdef", carets: &[(0, 1), (0, 3)], before: &[], moves: &[end], selected: &[(0, 1, 6)], after: &[(0, 6)] },
+            Case { name: "a caret on an empty line selects nothing", text: "ab\n\ncd", carets: &[(0, 0), (1, 0), (2, 0)], before: &[], moves: &[end], selected: &[(0, 0, 2), (2, 0, 2)], after: &[(0, 2), (1, 0), (2, 2)] },
+            Case { name: "shift+left over a line start moves the carets but keeps no selection", text: "ab\ncd\nef", carets: &[(1, 0), (2, 0)], before: &[], moves: &[left], selected: &[], after: &[(0, 2), (1, 2)] },
+            Case { name: "shift+down moves the carets but keeps no selection", text: "abcd\nab\nabcd", carets: &[(0, 3), (1, 1)], before: &[], moves: &[down], selected: &[], after: &[(1, 2), (2, 1)] },
+            Case { name: "a single caret keeps extending its occurrence", text: "one two", carets: &[(0, 3)], before: &[(0, 0, 3)], moves: &[end], selected: &[(0, 0, 7)], after: &[(0, 7)] },
+        ];
+        for case in cases {
+            let mut d = doc_with(case.text);
+            d.cursor = case.carets[0];
+            d.extra_carets = case.carets[1..].to_vec();
+            d.occurrences = case.before.to_vec();
+            for movement in case.moves {
+                d.move_by(movement, true);
+            }
+            let mut carets = vec![d.cursor];
+            carets.extend(d.extra_carets.iter().copied());
+            carets.sort();
+            assert_eq!((d.occurrences.as_slice(), carets.as_slice()), (case.selected, case.after), "{}", case.name);
+            assert_eq!(d.selection, None, "{}: several carets use per-caret ranges", case.name);
+        }
 
+        let mut d = doc_with("abc\ndef");
+        d.cursor = (0, 1);
         d.move_by(Document::end, true);
+        d.add_caret_down();
+        d.move_by(Document::home, true);
+        assert_eq!(d.occurrences, vec![(0, 0, 1), (1, 0, 3)], "a selection made before adding a caret keeps its anchor");
+    }
+
+    #[test]
+    fn copy_cut_and_typing_use_every_selection() {
+        let select = || {
+            let mut d = doc_with("abc def\n  ghi jkl");
+            d.cursor = (0, 3);
+            d.extra_carets = vec![(1, 5)];
+            d.move_by(Document::end, true);
+            d
+        };
+        assert_eq!(select().copy_text(), (" def\n jkl".to_string(), false), "copy takes every selection, one per line");
+        let mut d = select();
         d.insert_char('X');
         assert_eq!(d.lines, vec!["abcX", "  ghiX"], "typing replaces every selection");
         d.undo();
         assert_eq!(d.occurrences, vec![(0, 3, 7), (1, 5, 9)], "undo brings the selections back");
         d.cut();
         assert_eq!(d.lines, vec!["abc", "  ghi"]);
+        assert!(d.occurrences.is_empty());
         d.undo();
-        assert_eq!(d.lines, vec!["abc def", "  ghi jkl"]);
-        let copied = d.copy_text().0;
-        d.move_by(Document::home, false);
-        assert!(d.occurrences.is_empty(), "plain movement deselects");
-        d.move_by(Document::end, false);
-        d.insert_text(&copied);
-        assert_eq!(d.lines, vec!["abc def def", "  ghi jkl jkl"], "pasting as many lines as carets gives each caret its line");
-        assert_eq!((d.cursor, d.extra_carets.clone()), ((0, 11), vec![(1, 13)]));
-        let mut d = doc_with("ab");
-        d.cursor = (0, 1);
-        d.extra_carets = vec![(0, 2)];
-        d.insert_text("X\nY");
-        assert_eq!((d.lines.clone(), d.cursor, d.extra_carets.clone()), (vec!["aXbY".to_string()], (0, 2), vec![(0, 4)]), "carets on one line");
+        assert_eq!(d.lines, vec!["abc def", "  ghi jkl"], "cut is one undo step");
     }
 
     #[test]
     fn multi_line_pastes_go_to_every_caret() {
+        let mut d = doc_with("abc def\n  ghi jkl");
+        d.cursor = (0, 7);
+        d.extra_carets = vec![(1, 9)];
+        d.insert_text(" def\n jkl");
+        assert_eq!(d.lines, vec!["abc def def", "  ghi jkl jkl"], "as many lines as carets: one line each");
+        assert_eq!((d.cursor, d.extra_carets.clone()), ((0, 11), vec![(1, 13)]));
+
+        let mut d = doc_with("ab");
+        d.cursor = (0, 1);
+        d.extra_carets = vec![(0, 2)];
+        d.insert_text("X\nY");
+        assert_eq!((d.lines.clone(), d.cursor, d.extra_carets.clone()), (vec!["aXbY".to_string()], (0, 2), vec![(0, 4)]), "one line each, carets on one line");
+
         let mut d = doc_with("ab\ncd");
         d.cursor = (1, 1);
         d.extra_carets = vec![(0, 1)];

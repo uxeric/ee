@@ -39,6 +39,7 @@ pub fn render(frame: &mut Frame, state: &EditorState) {
     if matches!(state.mode, Mode::Picker) {
         render_picker(frame, state, area);
     }
+    render_help(frame, state, area);
     render_update_modal(frame, state, area);
 }
 
@@ -58,6 +59,7 @@ fn render_picker(frame: &mut Frame, state: &EditorState, area: Rect) {
         PickerKind::Actions => " actions ",
         PickerKind::Structure => " file structure ",
         PickerKind::Files => " open or create a file ",
+        PickerKind::Themes => " theme ",
     };
     let block = Block::bordered()
         .border_type(BorderType::Rounded)
@@ -149,7 +151,7 @@ pub fn areas(area: Rect, state: &EditorState) -> Areas {
         status,
         selection,
         caret_rows,
-        popup: popup_rect(area, state),
+        popup: popup_rect(area, state).or_else(|| help_rect(area, state)),
         modal: modal_rect(area, state),
     }
 }
@@ -585,9 +587,75 @@ fn render_status_bar(frame: &mut Frame, state: &EditorState, area: Rect) {
     if sel_len > 0 {
         position = format!("{} selected  {}", sel_len, position);
     }
-    let right = render_right(frame, area, 0, &format!("{} ", position), theme::dim());
-    let left = Rect::new(area.x, area.y, area.width.saturating_sub(right + 3), area.height);
+    let (button, room) = match help_button_in(area) {
+        Some(b) => {
+            let cap = if state.help { Style::default().fg(theme::pal().void).bg(theme::pal().hot) } else { keycap_style() };
+            frame.render_widget(Paragraph::new(Line::from(vec![Span::styled(" F1 ", cap), Span::styled(" help", theme::dim())])), b);
+            (b.width + 2, Rect::new(area.x, area.y, area.width - b.width - 2, area.height))
+        }
+        None => (0, area),
+    };
+    let right = render_right(frame, room, 0, &format!("{} ", position), theme::dim());
+    let left = Rect::new(area.x, area.y, area.width.saturating_sub(button + right + 3), area.height);
     frame.render_widget(Paragraph::new(Line::from(spans)), left);
+}
+
+fn keycap_style() -> Style {
+    Style::default().bg(theme::pal().keycap).fg(theme::pal().text).add_modifier(Modifier::BOLD)
+}
+
+fn help_button_in(status: Rect) -> Option<Rect> {
+    let width = 9;
+    (status.width >= 40 && status.height > 0).then(|| Rect::new(status.x + status.width - width, status.y, width, 1))
+}
+
+pub fn help_button(area: Rect, state: &EditorState) -> Option<Rect> {
+    help_button_in(layout(area, state.mode).3)
+}
+
+const HELP_FOOTER: &str = "Any key closes. Ctrl+Shift+A lists every action.";
+
+fn help_rows() -> Vec<(&'static str, &'static str)> {
+    crate::keys::HELP
+        .iter()
+        .filter_map(|name| crate::keys::PALETTE.iter().find(|(n, _, _)| n == name).map(|&(_, label, keys)| (label, keys)))
+        .collect()
+}
+
+pub fn help_rect(area: Rect, state: &EditorState) -> Option<Rect> {
+    if !state.help {
+        return None;
+    }
+    let editor = editor_rect_for(area, state.mode);
+    let rows = help_rows();
+    let widest = rows.iter().map(|(l, k)| l.chars().count() + k.chars().count() + 6).max().unwrap_or(0).max(HELP_FOOTER.chars().count() + 2);
+    let width = ((widest + 2) as u16).min(area.width.saturating_sub(2));
+    let height = (rows.len() as u16 + 4).min(editor.height);
+    (width >= 12 && height >= 3).then(|| Rect::new(area.x + (area.width - width) / 2, editor.y + (editor.height - height) / 2, width, height))
+}
+
+fn render_help(frame: &mut Frame, state: &EditorState, area: Rect) {
+    let Some(rect) = help_rect(area, state) else {
+        return;
+    };
+    let block = Block::bordered()
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(theme::pal().ice))
+        .title(Span::styled(" keys ", Style::default().fg(theme::pal().hot).add_modifier(Modifier::BOLD)))
+        .style(Style::default().bg(theme::pal().void));
+    let inner = block.inner(rect);
+    frame.render_widget(Clear, rect);
+    frame.render_widget(block, rect);
+    let body = inner.height.saturating_sub(2) as usize;
+    for (i, (label, keys)) in help_rows().into_iter().take(body).enumerate() {
+        let row = Rect::new(inner.x + 1, inner.y + i as u16, inner.width.saturating_sub(2), 1);
+        frame.render_widget(Paragraph::new(Span::styled(label, theme::text())), row);
+        frame.render_widget(Paragraph::new(Span::styled(format!(" {} ", keys), keycap_style())).alignment(Alignment::Right), row);
+    }
+    if inner.height >= 2 {
+        let footer = Rect::new(inner.x + 1, inner.y + inner.height - 1, inner.width.saturating_sub(2), 1);
+        frame.render_widget(Paragraph::new(Span::styled(HELP_FOOTER, theme::dim())), footer);
+    }
 }
 
 fn selection_length(lines: &[String], start: (usize, usize), end: (usize, usize)) -> usize {
@@ -632,7 +700,7 @@ fn render_update_modal(frame: &mut Frame, state: &EditorState, area: Rect) {
     let inner = block.inner(rect);
     frame.render_widget(Clear, rect);
     frame.render_widget(block, rect);
-    let key = |k: &str| Span::styled(format!(" {} ", k), Style::default().bg(theme::pal().keycap).fg(theme::pal().text).add_modifier(Modifier::BOLD));
+    let key = |k: &str| Span::styled(format!(" {} ", k), keycap_style());
     let mut lines: Vec<Line> = LOGO
         .iter()
         .enumerate()
@@ -789,6 +857,30 @@ mod tests {
             assert_eq!(selected(gutter + col, top + line), want, "cell ({}, {})", line, col);
         }
         assert!(render_rows(buf)[7].contains("4 selected"), "status counts selected chars");
+
+        let mut state = EditorState::new();
+        state.tabs[0] = Document::with_content("t", "echo one two\n  echo three four\nplain");
+        state.tabs[0].cursor = (0, 5);
+        state.apply(crate::keys::Action::AddCaretDown);
+        state.apply(crate::keys::Action::SelectEnd);
+        let t = draw(&state, 30, 6);
+        let bg = |line: u16, col: u16| t.backend().buffer().cell((2 + col, 1 + line)).unwrap().bg;
+        let p = theme::pal();
+        for (line, from, to) in [(0, 5, 12), (1, 5, 17)] {
+            for col in from..to {
+                assert_eq!(bg(line, col), p.selection, "shift+end paints line {} col {}", line, col);
+            }
+            assert_ne!(bg(line, from - 1), p.selection, "line {} col {} is not selected", line, from - 1);
+        }
+        assert_eq!(bg(1, 0), p.cursor_line, "the caret line keeps its tint outside the selection");
+        assert_eq!((bg(0, 12), bg(1, 17)), (p.ice, p.hot), "a caret at the end of each selection");
+        state.apply(crate::keys::Action::SelectHome);
+        let t = draw(&state, 30, 6);
+        let bg = |line: u16, col: u16| t.backend().buffer().cell((2 + col, 1 + line)).unwrap().bg;
+        assert_eq!((bg(0, 0), bg(1, 2)), (p.ice, p.hot), "the carets move to each line's first non-blank");
+        assert_eq!((1..5).map(|c| bg(0, c)).collect::<Vec<_>>(), vec![p.selection; 4]);
+        assert_eq!((3..5).map(|c| bg(1, c)).collect::<Vec<_>>(), vec![p.selection; 2], "shift+home selects back from each anchor");
+        assert_eq!((bg(1, 1), bg(1, 5)), (p.cursor_line, p.cursor_line), "nothing selected outside the ranges");
     }
 
     #[test]
@@ -1016,5 +1108,32 @@ mod tests {
         let rows = render_rows(draw(&state, 30, 8).backend().buffer());
         assert!(rows[1].starts_with("1 0123456789"), "Home scrolls back: {:?}", rows[1]);
         assert_eq!(rows[2].trim_end(), "2 short");
+    }
+
+    #[test]
+    fn the_help_button_opens_a_sheet_of_the_basic_shortcuts() {
+        let mut state = EditorState::new();
+        let area = Rect::new(0, 0, 80, 24);
+        let button = help_button(area, &state).unwrap();
+        assert_eq!(button, Rect::new(71, 23, 9, 1), "bottom right of the status bar");
+        let rows = render_rows(draw(&state, 80, 24).backend().buffer());
+        assert_eq!(rows[23].chars().skip(71).collect::<String>(), " F1  help");
+        assert!(rows[23].contains("ln 1, col 1"), "the position still shows: {:?}", rows[23]);
+
+        state.apply(crate::keys::Action::ShowHelp);
+        let rows = render_rows(draw(&state, 80, 24).backend().buffer());
+        for name in crate::keys::HELP {
+            let &(_, label, keys) = crate::keys::PALETTE.iter().find(|(n, _, _)| n == name).unwrap();
+            assert!(rows.iter().any(|r| r.contains(label) && r.contains(&format!(" {} ", keys))), "{} with {}", label, keys);
+        }
+        for (label, keys) in [("Command palette", "Ctrl+Shift+A"), ("Send lines to herdr", "Alt+Shift+E")] {
+            assert!(rows.iter().any(|r| r.contains(label) && r.contains(keys)), "{} is on the sheet", label);
+        }
+        assert!(rows.iter().any(|r| r.contains(HELP_FOOTER)));
+        assert_eq!(areas(area, &state).popup, help_rect(area, &state), "the sheet gets the popup animation");
+        assert!(help_button(Rect::new(0, 0, 30, 10), &state).is_none(), "no button when the bar is too narrow");
+        for (w, h) in [(0, 0), (12, 3), (30, 6), (40, 8)] {
+            draw(&state, w, h);
+        }
     }
 }

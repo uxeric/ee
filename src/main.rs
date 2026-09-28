@@ -125,11 +125,15 @@ fn screen(terminal: &Terminal<CrosstermBackend<Stdout>>) -> std::io::Result<Rect
 
 fn run(terminal: &mut Terminal<CrosstermBackend<Stdout>>, state: &mut EditorState) -> std::io::Result<()> {
     let (config, warning) = config::load();
-    let mut omarchy = theme::OmarchyTheme::new(config.follow_omarchy_theme);
-    omarchy.refresh();
+    state.theme_roots = theme::Roots::from_env();
+    state.config_path = config::path();
+    let theme_found = state.use_theme(&config.theme);
+    let missing_theme = config.theme.clone();
     let keymap = Keymap::new(config);
     if let Some(warning) = warning {
         state.warn(warning);
+    } else if !theme_found {
+        state.warn(format!("theme `{}` isn't installed; using neon (Ctrl+` picks another)", missing_theme));
     }
     let mut double_shift = DoubleShift::default();
     let mut motion = Motion::from_env();
@@ -141,7 +145,7 @@ fn run(terminal: &mut Terminal<CrosstermBackend<Stdout>>, state: &mut EditorStat
     loop {
         let area = screen(terminal)?;
         if !motion.is_animating() {
-            omarchy.refresh();
+            state.theme.refresh();
         }
         if let Some(rx) = &update_check {
             match rx.try_recv() {
@@ -201,6 +205,12 @@ fn run(terminal: &mut Terminal<CrosstermBackend<Stdout>>, state: &mut EditorStat
                     Some(action) => state.apply(action),
                     None => true,
                 }
+            }
+            Event::Mouse(mouse)
+                if mouse.kind == MouseEventKind::Down(MouseButton::Left)
+                    && ui::help_button(area, state).is_some_and(|b| b.contains(ratatui::layout::Position::new(mouse.column, mouse.row))) =>
+            {
+                state.apply(Action::ShowHelp)
             }
             Event::Mouse(mouse)
                 if mouse.kind == MouseEventKind::Down(MouseButton::Left)

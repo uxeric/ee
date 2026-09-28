@@ -60,6 +60,8 @@ pub enum Action {
     InsertText(String),
     SendToPane,
     MoveToPane,
+    SwitchTheme,
+    ShowHelp,
     StartNewLine,
     WordLeft,
     WordRight,
@@ -136,6 +138,8 @@ impl DoubleShift {
 }
 
 pub const PALETTE: &[(&str, &str, &str)] = &[
+    ("find_action", "Command palette", "Ctrl+Shift+A"),
+    ("show_help", "Keyboard shortcuts", "F1"),
     ("save_all", "Save all", "Ctrl+S"),
     ("open_file", "Open or create a file", "Ctrl+N"),
     ("rename", "Rename file / save as", "Shift+F6"),
@@ -163,7 +167,7 @@ pub const PALETTE: &[(&str, &str, &str)] = &[
     ("cut", "Cut", "Ctrl+X"),
     ("paste", "Paste", "Ctrl+V"),
     ("undo", "Undo", "Ctrl+Z"),
-    ("redo", "Redo", "Alt+Y"),
+    ("redo", "Redo", "Ctrl+Shift+Z"),
     ("duplicate_line", "Duplicate line", "Ctrl+D"),
     ("delete_line", "Delete line", "Ctrl+Y"),
     ("move_line_up", "Move line up", "Alt+Shift+Up"),
@@ -182,7 +186,26 @@ pub const PALETTE: &[(&str, &str, &str)] = &[
     ("end_of_file", "End of file", "Ctrl+End"),
     ("send_to_pane", "Send lines to herdr", "Alt+Shift+E"),
     ("move_to_pane", "Move lines to herdr", "Alt+Shift+M"),
+    ("switch_theme", "Switch theme", "Ctrl+`"),
     ("quit", "Quit", "Ctrl+Q"),
+];
+
+pub const HELP: &[&str] = &[
+    "save_all",
+    "open_file",
+    "find",
+    "replace",
+    "find_in_files",
+    "go_to_line",
+    "undo",
+    "redo",
+    "add_caret_down",
+    "select_all_occurrences",
+    "find_action",
+    "send_to_pane",
+    "move_to_pane",
+    "switch_theme",
+    "quit",
 ];
 
 impl Action {
@@ -235,6 +258,8 @@ impl Action {
             "select_end" => Action::SelectEnd,
             "send_to_pane" => Action::SendToPane,
             "move_to_pane" => Action::MoveToPane,
+            "switch_theme" => Action::SwitchTheme,
+            "show_help" => Action::ShowHelp,
             "clear_extra_carets" => Action::ClearExtraCaret,
             "join_lines" => Action::JoinLines,
             "reformat" => Action::Reformat,
@@ -307,6 +332,7 @@ impl Keymap {
             'x' => Some(Action::Cut),
             'y' => Some(Action::DeleteLine),
             'z' => Some(Action::Undo),
+            '`' => Some(Action::SwitchTheme),
             'Z' => Some(Action::Redo),
             '[' => Some(Action::PreviousTab),
             ']' | '5' => Some(Action::NextTab),
@@ -462,6 +488,7 @@ impl Keymap {
             KeyCode::PageUp if !alt => Some(if select { Action::SelectPageUp } else { Action::PageUp }),
             KeyCode::PageDown if !alt => Some(if select { Action::SelectPageDown } else { Action::PageDown }),
             KeyCode::F(4) if ctrl => Some(Action::CloseTab),
+            KeyCode::F(1) if !ctrl && !alt && !shift => Some(Action::ShowHelp),
             KeyCode::F(12) if ctrl => Some(Action::FileStructure),
             KeyCode::F(3) if !ctrl && !alt => {
                 if shift {

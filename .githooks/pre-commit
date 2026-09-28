@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-shipped=$(git diff --cached --name-only | grep -vE '\.md$|^assets/readme/' || true)
+shipped=$(git diff --cached --name-only | grep -vE '\.md$|^assets/readme/|^tools/' || true)
 [ -z "$shipped" ] && exit 0
 
 version() { sed -n 's/^version = "\(.*\)"$/\1/p' | head -n 1; }
