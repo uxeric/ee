@@ -30,6 +30,7 @@ pub struct Document {
     pub path: Option<String>,
     pub dirty: bool,
     pub scroll_top: Cell<usize>,
+    pub view_anchor: Cell<Option<((usize, usize), u64)>>,
     undo: Vec<Snapshot>,
     redo: Vec<Snapshot>,
     rev: u64,
@@ -48,6 +49,7 @@ impl Document {
             path: None,
             dirty: false,
             scroll_top: Cell::new(0),
+            view_anchor: Cell::new(None),
             undo: Vec::new(),
             redo: Vec::new(),
             rev: 0,
@@ -67,6 +69,7 @@ impl Document {
             path: None,
             dirty: false,
             scroll_top: Cell::new(0),
+            view_anchor: Cell::new(None),
             undo: Vec::new(),
             redo: Vec::new(),
             rev: 0,
@@ -667,6 +670,10 @@ impl Document {
         let last = self.lines.len() - 1;
         let new = (last, self.lines[last].chars().count());
         self.cursor = new;
+    }
+
+    pub fn rev(&self) -> u64 {
+        self.rev
     }
 
     pub fn is_markdown(&self) -> bool {

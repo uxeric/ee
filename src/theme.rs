@@ -13,6 +13,9 @@ pub const CURSOR_LINE: Color = Color::Rgb(0x14, 0x0C, 0x2E);
 pub const CODE_BG: Color = Color::Rgb(0x1A, 0x12, 0x38);
 pub const TABLE_HEAD: Color = Color::Rgb(0x24, 0x14, 0x52);
 pub const TABLE_STRIPE: Color = Color::Rgb(0x12, 0x0B, 0x26);
+pub const NEON: Color = Color::Rgb(0x3D, 0xFF, 0xA2);
+pub const VIOLET: Color = Color::Rgb(0xB1, 0x8C, 0xFF);
+pub const KEYCAP: Color = Color::Rgb(0x2E, 0x26, 0x56);
 
 pub fn text() -> Style {
     Style::default().fg(TEXT)

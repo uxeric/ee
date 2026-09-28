@@ -57,6 +57,7 @@ pub enum Action {
     SelectEnd,
     InsertText(String),
     SendToPane,
+    FollowLink(String),
     #[allow(dead_code)]
     CodeCompletion,
     #[allow(dead_code)]

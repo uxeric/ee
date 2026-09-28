@@ -198,6 +198,7 @@ impl EditorState {
             Action::FindPrevious => self.find_step(false),
             Action::SelectAllOccurrences => self.select_all_occurrences(None),
             Action::SendToPane => self.send_to_pane(),
+            Action::FollowLink(url) => self.follow_link(&url),
             Action::NextTab => {
                 self.active = (self.active + 1) % self.tabs.len();
                 self.cues.push(Cue::TabNext);
@@ -337,6 +338,51 @@ impl EditorState {
                 Err(e) => self.warn(format!("saved as {}, but cannot remove {}: {}", target, old, plain(&e))),
             },
             None => self.status = format!("saved as {}", target),
+        }
+    }
+
+    fn jump_to_anchor(&mut self, anchor: &str) -> bool {
+        let doc = &mut self.tabs[self.active];
+        let Some(view) = doc.markdown_view() else {
+            return false;
+        };
+        let Some(line) = view.lines.iter().position(|l| l.anchor.as_deref() == Some(anchor)) else {
+            return false;
+        };
+        doc.clear_extra_carets();
+        doc.cursor = (line, 0);
+        true
+    }
+
+    fn follow_link(&mut self, url: &str) {
+        if url.is_empty() {
+            return;
+        }
+        if let Some(anchor) = url.strip_prefix('#') {
+            if !self.jump_to_anchor(anchor) {
+                self.warn(format!("no heading for #{} in this file", anchor));
+            }
+            return;
+        }
+        let external = ["http://", "https://", "mailto:"].iter().any(|p| url.starts_with(p));
+        if external {
+            match open_external(url) {
+                Ok(()) => self.status = format!("opened {}", url),
+                Err(e) => self.fail(format!("cannot open {}: {}", url, plain(&e))),
+            }
+            return;
+        }
+        let (file, anchor) = url.split_once('#').unwrap_or((url, ""));
+        let base = self.tabs[self.active]
+            .path
+            .as_deref()
+            .and_then(|p| Path::new(p).parent())
+            .map(Path::to_path_buf)
+            .unwrap_or_default();
+        let target = base.join(file).to_string_lossy().to_string();
+        self.open_path(&target);
+        if !anchor.is_empty() && self.alert.is_none() {
+            self.jump_to_anchor(anchor);
         }
     }
 
@@ -593,6 +639,19 @@ impl EditorState {
             }
         }
     }
+}
+
+fn open_external(url: &str) -> std::io::Result<()> {
+    if cfg!(test) {
+        return Ok(());
+    }
+    std::process::Command::new("xdg-open")
+        .arg(url)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .map(|_| ())
 }
 
 pub fn plain(e: &std::io::Error) -> String {
@@ -959,6 +1018,27 @@ mod tests {
             state.apply(Action::SaveAll);
             assert_eq!(fs::read_to_string(&path).unwrap(), "hi");
             assert!(Document::open_or_new(&dir.to_string_lossy()).is_err(), "a directory is still an error");
+            fs::remove_dir_all(&dir).unwrap();
+        }
+    
+
+        #[test]
+        fn following_links_jumps_to_headings_and_opens_files() {
+            let dir = scratch("links");
+            fs::write(dir.join("other.md"), "# Top\n\ntext\n\n## Deep Dive\n").unwrap();
+            let main_path = dir.join("main.md");
+            fs::write(&main_path, "see [x](#usage)\n\n## Usage\n").unwrap();
+            let mut state = EditorState::new();
+            state.open_path(&main_path.to_string_lossy());
+            state.apply(Action::FollowLink("#usage".into()));
+            assert_eq!(state.tabs[0].cursor, (2, 0));
+            state.apply(Action::FollowLink("#nope".into()));
+            assert_eq!(state.status, "no heading for #nope in this file");
+            state.apply(Action::FollowLink("other.md#deep-dive".into()));
+            assert_eq!((state.tabs.len(), state.active), (2, 1), "relative links open beside the current file");
+            assert_eq!(state.tabs[1].cursor, (4, 0));
+            state.apply(Action::FollowLink("https://example.com".into()));
+            assert_eq!(state.status, "opened https://example.com");
             fs::remove_dir_all(&dir).unwrap();
         }
     }

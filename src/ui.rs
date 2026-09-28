@@ -118,13 +118,17 @@ fn render_editor(
                     theme::dim(),
                 )];
                 let cells = rendered.cells();
+                let pad = centered_pad(rendered, cells.len(), text_width);
+                if pad > 0 {
+                    spans.push(Span::raw(" ".repeat(pad)));
+                }
                 for &(c, style, src) in &cells {
                     let hit = highlights.iter().any(|&(l, s, e)| l == line_idx && s <= src && src < e);
                     let style = if hit { theme::find_match() } else { theme::text().patch(style) };
                     spans.push(Span::styled(c.to_string(), style));
                 }
                 if let Some((c, style)) = rendered.fill {
-                    let rest = text_width.saturating_sub(cells.len());
+                    let rest = text_width.saturating_sub(pad + cells.len());
                     spans.push(Span::styled(c.to_string().repeat(rest), style));
                 }
                 if let Some(bg) = rendered.bg {
@@ -212,10 +216,27 @@ fn scroll_for(top: usize, cursor_line: usize, height: usize) -> usize {
     }
 }
 
+fn max_top(doc: &Document, height: usize) -> usize {
+    doc.lines.len().saturating_sub(height.max(1))
+}
+
 fn visible_top(doc: &Document, height: usize) -> usize {
-    let top = scroll_for(doc.scroll_top.get(), doc.cursor.0, height);
+    let anchor = Some((doc.cursor, doc.rev()));
+    let top = if doc.view_anchor.get() == anchor {
+        doc.scroll_top.get().min(max_top(doc, height))
+    } else {
+        scroll_for(doc.scroll_top.get(), doc.cursor.0, height)
+    };
+    doc.view_anchor.set(anchor);
     doc.scroll_top.set(top);
     top
+}
+
+pub fn scroll_view(area: Rect, state: &EditorState, lines: isize) {
+    let doc = &state.tabs[state.active];
+    let height = editor_rect_for(area, state.mode).height as usize;
+    let top = visible_top(doc, height) as isize + lines;
+    doc.scroll_top.set(top.clamp(0, max_top(doc, height) as isize) as usize);
 }
 
 fn in_selection(doc: &Document, line_idx: usize, col: usize) -> bool {
@@ -267,6 +288,25 @@ fn layout(area: Rect, mode: Mode) -> (Rect, Rect, Option<Rect>, Rect) {
     }
 }
 
+fn centered_pad(rendered: &crate::markdown::RenderedLine, used: usize, width: usize) -> usize {
+    if rendered.centered {
+        width.saturating_sub(used) / 2
+    } else {
+        0
+    }
+}
+
+pub fn link_at(editor_area: Rect, mx: u16, my: u16, doc: &Document) -> Option<String> {
+    let (line, _) = mouse_to_doc(editor_area, mx, my, doc)?;
+    let view = doc.markdown_view().filter(|_| !doc.is_raw_line(line))?;
+    let rendered = &view.lines[line];
+    let gutter = doc.lines.len().to_string().len() + 1;
+    let width = (editor_area.width as usize).saturating_sub(gutter);
+    let pad = centered_pad(rendered, rendered.cells().len(), width);
+    let dcol = (mx.saturating_sub(editor_area.x) as usize).checked_sub(gutter + pad)?;
+    rendered.link_at(dcol).map(str::to_string)
+}
+
 pub fn editor_rect_for(area: Rect, mode: Mode) -> Rect {
     layout(area, mode).1
 }
@@ -297,7 +337,12 @@ pub fn mouse_to_doc(editor_area: Rect, mx: u16, my: u16, doc: &Document) -> Opti
     let gutter = doc.lines.len().to_string().len() + 1;
     let text_col = col_in.saturating_sub(gutter);
     let col = match doc.markdown_view().filter(|_| !doc.is_raw_line(line)) {
-        Some(view) => view.lines[line].display_to_source(text_col, doc.lines[line].chars().count()),
+        Some(view) => {
+            let rendered = &view.lines[line];
+            let width = (editor_area.width as usize).saturating_sub(gutter);
+            let pad = centered_pad(rendered, rendered.cells().len(), width);
+            rendered.display_to_source(text_col.saturating_sub(pad), doc.lines[line].chars().count())
+        }
         None => text_col,
     };
     Some((line, col))
@@ -630,5 +675,51 @@ mod tests {
         state.tabs[0].cursor = (29, 0);
         t.draw(|f| render(f, &state)).unwrap();
         assert_eq!(mouse_to_doc(editor, 3, editor.y, &state.tabs[0]), Some((20, 0)), "clicks follow the scroll");
+    }
+
+    #[test]
+    fn mouse_wheel_scrolls_the_view_and_the_caret_brings_it_back() {
+        let text: Vec<String> = (1..=40).map(|n| format!("line {}", n)).collect();
+        let mut state = EditorState::new();
+        state.tabs[0] = Document::with_content("t.txt", &text.join("\n"));
+        let area = Rect::new(0, 0, 20, 12);
+        let mut t = Terminal::new(TestBackend::new(20, 12)).unwrap();
+        let mut first_row = |state: &EditorState| {
+            t.draw(|f| render(f, state)).unwrap();
+            render_rows(t.backend().buffer())[1].trim().to_string()
+        };
+        assert_eq!(first_row(&state), "1 line 1");
+        scroll_view(area, &state, 3);
+        scroll_view(area, &state, 3);
+        assert_eq!(first_row(&state), "7 line 7", "two notches down");
+        assert_eq!(state.tabs[0].cursor, (0, 0), "the caret stays put");
+        for _ in 0..20 {
+            scroll_view(area, &state, 3);
+        }
+        assert_eq!(first_row(&state), "31 line 31", "stops with the last line at the bottom");
+        scroll_view(area, &state, -100);
+        assert_eq!(first_row(&state), "1 line 1", "stops at the top");
+        scroll_view(area, &state, 9);
+        assert_eq!(first_row(&state), "10 line 10");
+        state.apply(crate::keys::Action::Down);
+        assert_eq!(first_row(&state), " 2 line 2".trim(), "moving the caret brings the view back");
+    }
+
+    #[test]
+    fn clicks_on_centred_markdown_find_the_link_under_the_mouse() {
+        let area = Rect::new(0, 0, 40, 12);
+        let editor = editor_rect_for(area, Mode::Normal);
+        let mut state = EditorState::new();
+        state.tabs[0] = Document::with_content("t.md", "<div align=\"center\">\n\n[go](#here)\n\n</div>\n\n# here");
+        state.tabs[0].cursor = (6, 0);
+        let mut t = Terminal::new(TestBackend::new(area.width, area.height)).unwrap();
+        t.draw(|f| render(f, &state)).unwrap();
+        let row: String = render_rows(t.backend().buffer())[editor.y as usize + 2].clone();
+        let x = row.find("go").unwrap() as u16;
+        assert!(x > 15, "the link is centred, not at the left edge: {:?}", row);
+        let doc = &state.tabs[0];
+        assert_eq!(link_at(editor, x, editor.y + 2, doc).as_deref(), Some("#here"));
+        assert_eq!(link_at(editor, 3, editor.y + 2, doc), None, "the padding is not a link");
+        assert_eq!(mouse_to_doc(editor, x, editor.y + 2, doc), Some((2, 1)), "lands on the g in [go](#here)");
     }
 }

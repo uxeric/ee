@@ -164,6 +164,21 @@ fn run(terminal: &mut Terminal<CrosstermBackend<Stdout>>, state: &mut EditorStat
                 }
                 true
             }
+            Event::Mouse(mouse)
+                if mouse.kind == MouseEventKind::Down(MouseButton::Left)
+                    && mouse.modifiers.contains(KeyModifiers::CONTROL) =>
+            {
+                let editor_area = ui::editor_rect_for(area, state.mode);
+                match ui::link_at(editor_area, mouse.column, mouse.row, &state.tabs[state.active]) {
+                    Some(url) => state.apply(Action::FollowLink(url)),
+                    None => true,
+                }
+            }
+            Event::Mouse(mouse) if matches!(mouse.kind, MouseEventKind::ScrollUp | MouseEventKind::ScrollDown) => {
+                let lines = if mouse.kind == MouseEventKind::ScrollUp { -3 } else { 3 };
+                ui::scroll_view(area, state, lines);
+                true
+            }
             Event::Paste(text) => {
                 motion.end_splash(&ui::areas(area, state));
                 let text = text.replace("\r\n", "\n").replace('\r', "\n");

@@ -90,8 +90,12 @@ In `.md` files, every line is shown rendered except the lines you're editing. Th
 - **Lists** get `•` `◦` `▪` bullets by depth; tasks become `□` and `✓`.
 - **Quotes** get a `▌` bar, rules become a full-width line, and fenced code gets a labelled rule over a tinted body.
 - **Tables** line up. Columns follow `:---`, `:---:` and `---:` alignment, and columns of numbers right-align on their own. The header sits on a violet band over a double cyan rule, and body rows are zebra-striped.
+- **Alerts** (`> [!NOTE]`, `[!TIP]`, `[!IMPORTANT]`, `[!WARNING]`, `[!CAUTION]`) become coloured callouts with an icon and a label.
+- **Code blocks** are highlighted by language: shell, TOML, Rust, Python, JavaScript and more. In `diff` blocks, added lines are cyan and removed lines magenta.
+- **HTML** the way GitHub shows it: `<kbd>` as keycaps; `<b>`, `<i>`, `<code>`, `<sub>` styled; `<summary>` as a `▸` header; `<div align="center">` content centred. `<br>`, comments and wrapper tags disappear.
+- **Images** become a `◩ alt text` placeholder, and a decorative image with an empty `alt` becomes a thin rule. Shields.io badges are drawn as two-tone text badges in their own colours, without any network access.
 
-`Alt`+Click on a rendered line lands on the character you clicked. The recording at the top is a real session: `- [ ] jack out` is typed raw, then becomes a checkbox the moment the caret moves on.
+`Alt`+Click on a rendered line lands on the character you clicked. `Ctrl`+Click on a link follows it: `#anchors` jump to that heading, relative paths open in a new tab (`other.md#section` jumps too), and web links open in your browser. The recording at the top is a real session: `- [ ] jack out` is typed raw, then becomes a checkbox the moment the caret moves on.
 
 ### Many carets, one keystroke
 
@@ -197,6 +201,8 @@ The system clipboard works through `wl-copy`/`wl-paste` (Wayland), `xclip` or `x
 |---|---|
 | Add caret up / down | <kbd>Ctrl</kbd>+<kbd>↑</kbd> / <kbd>Ctrl</kbd>+<kbd>↓</kbd> |
 | Add or remove a caret at a position | <kbd>Alt</kbd> + left click |
+| Follow a link in rendered markdown | <kbd>Ctrl</kbd> + left click |
+| Scroll the view (the caret stays put until you move it) | mouse wheel |
 | Select all occurrences of the word or selection (press again to clear) | <kbd>Alt</kbd>+<kbd>Shift</kbd>+<kbd>J</kbd> |
 | Back to one caret, clear the selection | <kbd>Esc</kbd> |
 
