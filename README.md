@@ -387,11 +387,11 @@ EOE_NO_FX=1 cargo run      # the debug build, no animations
 > Probably not.
 
 > [!NOTE]
-> **Will you ever include a plugin system?**<br>
+> **Will you include a plugin system?**<br>
 > Nope. Fork and edit the codebase and extend it however you like.
 
 > [!WARNING]
-> **Your design choices stink.**<br>
+> **Your design choices are terrible.**<br>
 > Yeah, probably. Take 5 minutes with an LLM and make it your own.
 
 > [!CAUTION]
@@ -400,7 +400,7 @@ EOE_NO_FX=1 cargo run      # the debug build, no animations
 
 > [!TIP]
 > **Do you know that Easy Editor has dibs on the `ee` command?**<br>
-> Ya. Did you read the name of the editor? Eric's Own Editor. I can do what I want!
+> Ya. Did you read the name of the editor? Eric's Own Editor, I can do what I want.
 
 <div align="center">
 <br>
