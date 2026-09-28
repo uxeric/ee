@@ -74,6 +74,23 @@ pub fn run_installer() -> std::io::Result<ExitStatus> {
     Command::new("bash").arg("-c").arg(format!("curl -fsSL '{}' | bash", url)).status()
 }
 
+pub fn install_and_restart(args: &[String]) -> (String, i32) {
+    let exe = match std::env::current_exe() {
+        Ok(exe) => exe,
+        Err(e) => return (format!("could not find where ee is installed ({}); nothing was updated.", e), 1),
+    };
+    match run_installer() {
+        Ok(status) if status.success() => {}
+        Ok(status) => {
+            return ("the update did not finish; your previous version is still installed.".to_string(), status.code().unwrap_or(1))
+        }
+        Err(e) => return (format!("could not run the installer ({}); nothing was updated.", e), 1),
+    }
+    use std::os::unix::process::CommandExt;
+    let error = Command::new(&exe).args(args).exec();
+    (format!("updated, but could not restart {} ({}). Run ee again.", exe.display(), error), 1)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -84,6 +101,34 @@ mod tests {
         assert!(!is_newer("40e5f66", "40e5f66"));
         assert!(!is_newer("40e5f661", "40e5f66"), "a longer local hash of the same commit");
         assert!(!is_newer("40e5f66", "40e5f66a"));
+    }
+
+    #[test]
+    fn restarting_after_an_update_runs_the_new_binary_that_replaced_this_one() {
+        if std::env::var_os("EE_RESTART_CHILD").is_some() {
+            assert!(std::env::var("EOE_INSTALL_URL").unwrap().starts_with("file://"), "never the real installer");
+            let (message, code) = install_and_restart(&["notes.md".to_string()]);
+            eprintln!("{}", message);
+            std::process::exit(code);
+        }
+        let dir = std::env::temp_dir().join(format!("ee-restart-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let running = dir.join("ee");
+        let marker = dir.join("restarted");
+        std::fs::copy(std::env::current_exe().unwrap(), &running).unwrap();
+        std::fs::write(dir.join("new-ee"), format!("#!/bin/sh\necho \"$0 $*\" > '{}'\n", marker.display())).unwrap();
+        std::fs::write(dir.join("install.sh"), format!("install -m755 '{}' '{}'\n", dir.join("new-ee").display(), running.display())).unwrap();
+        let out = Command::new(&running)
+            .args(["--exact", "update::tests::restarting_after_an_update_runs_the_new_binary_that_replaced_this_one", "--nocapture"])
+            .env("EE_RESTART_CHILD", "1")
+            .env("EOE_INSTALL_URL", format!("file://{}", dir.join("install.sh").display()))
+            .output()
+            .unwrap();
+        let restarted = std::fs::read_to_string(&marker).ok();
+        let stderr = String::from_utf8_lossy(&out.stderr).to_string();
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(restarted, Some(format!("{} notes.md\n", running.display())), "the installed binary runs with the same arguments; stderr: {}", stderr);
     }
 
     #[test]
