@@ -79,13 +79,13 @@ Prefer doing it by hand? `cargo build --release && install -Dm755 target/release
 
 ### Markdown that renders while you write it
 
-In `.md` files, every line is rendered except the one you're editing, which shows its raw source. One source line is always one row, so nothing jumps around.
+In `.md` files, every line is rendered except the one you're editing, which shows its raw source. A long line wraps onto the next rows so the end stays on screen. The caret, a selection, and a click follow those rows. One source line is still one paragraph. A rendered table stays one row per line, so its columns stay lined up; the row you are editing still wraps.
 
 Headings, emphasis, lists, checkboxes, quotes, tables, GitHub alerts, code blocks (highlighted by language), common HTML and shields.io badges all render. Images show as a placeholder. <kbd>Ctrl</kbd>+Click follows a link: to a heading, another file, or your browser.
 
 ### Word documents, the same way
 
-A `.docx` file is one paragraph per line. Lines you are not editing render with the same heading, bold, italic, strike, and link colours as markdown. The line under the caret shows the marks: `# `, `**bold**`, `*italic*`, `~~strike~~`, `[label](url)`, `- ` for a bullet, `1. ` for a numbered item, `> ` for a quote. <kbd>Ctrl</kbd>+Click follows a link, and <kbd>Ctrl</kbd>+<kbd>F12</kbd> jumps to a heading.
+A `.docx` file is one paragraph per line. A long paragraph wraps onto the next rows the same way. Lines you are not editing render with the same heading, bold, italic, strike, and link colours as markdown. The line under the caret shows the marks: `# `, `**bold**`, `*italic*`, `~~strike~~`, `[label](url)`, `- ` for a bullet, `1. ` for a numbered item, `> ` for a quote. <kbd>Ctrl</kbd>+Click follows a link, and <kbd>Ctrl</kbd>+<kbd>F12</kbd> jumps to a heading.
 
 The file on disk stays a Word document. Open it and save without typing, and the bytes come back unchanged. A change in one paragraph leaves the others, and every table, picture, header, and style, as Word stored them. A typo inside a coloured word keeps that colour and size. Adding or removing bold, italic, or strike updates those marks on the words you changed, and those words then use the editor's colours, so Word's colour and size on them are cleared. Changing a heading, list, or quote marker updates that paragraph's style. The number you type on a list line is how it looks here; Word keeps its own numbering.
 
@@ -127,6 +127,7 @@ The sent lines answer back: a magenta write head sweeps each one, breaking it in
 | A popup opens (command palette, file structure, open file, theme, keys) | Its frame draws out from the corners while the text decrypts from hex noise, left to right |
 | Moving the selection in a popup | The new row locks on with a cyan sweep |
 | An update is ready | The update panel decrypts in, with an amber hazard band on its frame |
+| A file changed on disk | A panel asks whether to reload it or keep editing |
 | Switching tabs | The new tab's text sweeps in from the direction you moved |
 | Opening a file | The text decodes in with a cyan glow |
 | Jumping to a match | The match flashes magenta |
@@ -200,7 +201,7 @@ Terminals can't tell `Ctrl+X` from `Ctrl+Shift+X`, so WebStorm's `Ctrl+Shift+let
 | Undo | <kbd>Ctrl</kbd>+<kbd>Z</kbd> | <kbd>Alt</kbd>+<kbd>Z</kbd> |
 | Redo | <kbd>Alt</kbd>+<kbd>Shift</kbd>+<kbd>Z</kbd> (<kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>Z</kbd> with the kitty keyboard protocol) | <kbd>Alt</kbd>+<kbd>Y</kbd> |
 
-`Ctrl+Y` is Delete line, as in WebStorm. Plain movement clears the selection. Long lines scroll sideways to follow the caret, and <kbd>Shift</kbd>+wheel or a sideways wheel scrolls them by hand.
+`Ctrl+Y` is Delete line, as in WebStorm. Plain movement clears the selection. A long line wraps onto the next rows. Up and down move one of those rows, and Home and End stay at the ends of the source line.
 
 </details>
 

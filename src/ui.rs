@@ -39,7 +39,11 @@ pub fn render(frame: &mut Frame, state: &EditorState) {
         render_picker(frame, state, area);
     }
     render_help(frame, state, area);
-    render_update_modal(frame, state, area);
+    if state.reload.is_some() {
+        render_reload_modal(frame, state, area);
+    } else {
+        render_update_modal(frame, state, area);
+    }
 }
 
 pub fn popup_rect(area: Rect, state: &EditorState) -> Option<Rect> {
@@ -144,28 +148,53 @@ pub fn areas(area: Rect, state: &EditorState) -> Areas {
     let (_, editor, bar, status) = layout(area, state.mode);
     let doc = &state.tabs[state.active];
     let height = editor.height as usize;
-    let (top, left) = visible_origin(doc, editor);
+    let (top, _) = visible_origin(doc, editor);
     let gutter = gutter(doc);
     let width = text_width(doc, editor);
+    let map = screen_map(doc, width);
     let selection = doc.selection.and_then(|((sl, sc), (el, ec))| {
-        let (start, end) = (sc.max(left), ec.min(left + width));
-        if sl != el || sl < top || sl >= top + height || start >= end {
+        if sl != el || width == 0 {
             return None;
         }
-        Some(Rect::new(editor.x + (gutter + start - left) as u16, editor.y + (sl - top) as u16, (end - start) as u16, 1))
+        let (r1, c1) = (sc / width, sc % width);
+        let (r2, c2) = if ec > sc && ec % width == 0 {
+            (ec / width - 1, width)
+        } else {
+            (ec / width, ec % width)
+        };
+        if r1 != r2 || c1 >= c2 {
+            return None;
+        }
+        let visual = map.starts.get(sl).copied()? + r1;
+        if visual < top || visual >= top + height {
+            return None;
+        }
+        Some(Rect::new(editor.x + (gutter + c1) as u16, editor.y + (visual - top) as u16, (c2 - c1) as u16, 1))
     });
     let mut lines: Vec<usize> = doc.extra_carets.iter().map(|&(l, _)| l).collect();
     lines.push(doc.cursor.0);
     lines.sort();
     lines.dedup();
-    let caret_rows = lines
-        .into_iter()
-        .filter(|&l| l >= top && l < top + height)
-        .map(|l| {
-            let shown = doc.lines[l].chars().count().saturating_sub(left).max(1).min(width.max(1));
-            Rect::new(editor.x + gutter as u16, editor.y + (l - top) as u16, shown as u16, 1)
-        })
-        .collect();
+    let mut caret_rows = Vec::new();
+    for line in lines {
+        let Some(&start) = map.starts.get(line) else {
+            continue;
+        };
+        let len = doc.lines[line].chars().count();
+        for local in 0..map.rows_of(line) {
+            let visual = start + local;
+            if visual < top || visual >= top + height {
+                continue;
+            }
+            let shown = if width == 0 {
+                1
+            } else {
+                let at = local * width;
+                if at >= len { 1 } else { (len - at).min(width).max(1) }
+            };
+            caret_rows.push(Rect::new(editor.x + gutter as u16, editor.y + (visual - top) as u16, shown as u16, 1));
+        }
+    }
     Areas {
         screen: area,
         editor,
@@ -210,134 +239,130 @@ fn render_editor(
     area: Rect,
 ) {
     let height = area.height as usize;
-    let cursor_line = doc.cursor.0;
-    let cursor_col = doc.cursor.1;
-
-    let (top_line, left) = visible_origin(doc, area);
-
-    let num_width = doc.lines.len().to_string().len();
-    let text_width = text_width(doc, area);
+    let (top, _) = visible_origin(doc, area);
+    let width = text_width(doc, area);
+    let map = screen_map(doc, width);
+    let source = map.source_range(top, height);
+    let syntax = doc.syntax_roles(source.clone());
     let markdown = doc.markdown_view();
-    let syntax = doc.syntax_roles(top_line..top_line + height);
+    let num_width = doc.lines.len().to_string().len();
+    let gutter_w = gutter(doc);
     let mut tinted_rows: Vec<(usize, Color)> = Vec::new();
-
+    let mut caret_screen: Vec<usize> = Vec::new();
     let mut lines: Vec<Line> = Vec::new();
-        for i in 0..height {
-            let line_idx = top_line + i;
-            if line_idx >= doc.lines.len() {
-                lines.push(Line::default());
-                continue;
-            }
-            if let Some(view) = markdown.as_ref().filter(|_| !doc.is_raw_line(line_idx)) {
-                let rendered = &view.lines[line_idx];
-                let mut spans = vec![Span::styled(
-                    format!("{:width$} ", line_idx + 1, width = num_width),
-                    theme::dim(),
-                )];
-                let cells = rendered.cells();
-                let pad = centered_pad(rendered, cells.len(), text_width);
-                let mut shown: Vec<(char, Style)> = vec![(' ', Style::default()); pad];
-                for &(c, style, src) in &cells {
-                    let hit = highlights.iter().any(|&(l, s, e)| l == line_idx && s <= src && src < e);
-                    shown.push((c, if hit { theme::find_match() } else { theme::text().patch(style) }));
-                }
-                if let Some((c, style)) = rendered.fill {
-                    let rest = (left + text_width).saturating_sub(shown.len());
-                    shown.extend(std::iter::repeat_n((c, style), rest));
-                }
-                spans.extend(shown.into_iter().skip(left).take(text_width).map(|(c, style)| Span::styled(c.to_string(), style)));
+
+    for i in 0..height {
+        let Some((line_idx, local)) = map.line_at(top + i) else {
+            lines.push(Line::default());
+            continue;
+        };
+        if line_idx == doc.cursor.0 {
+            caret_screen.push(i);
+        }
+        let number = if local == 0 {
+            format!("{:width$} ", line_idx + 1, width = num_width)
+        } else {
+            " ".repeat(gutter_w)
+        };
+        let number_style = if line_idx == doc.cursor.0 && local == 0 {
+            Style::default().fg(theme::pal().hot).add_modifier(Modifier::BOLD)
+        } else {
+            theme::dim()
+        };
+        let mut spans = vec![Span::styled(number, number_style)];
+        if let Some(view) = markdown.as_ref().filter(|_| !doc.is_raw_line(line_idx)) {
+            if let Some(rendered) = view.lines.get(line_idx) {
                 if let Some(bg) = rendered.bg {
                     tinted_rows.push((i, bg));
+                }
+                let cells = rendered.cells();
+                let fits_centered = rendered.centered && cells.len() <= width;
+                if fits_centered || width == 0 {
+                    let pad = if width == 0 { 0 } else { centered_pad(rendered, cells.len(), width) };
+                    let mut shown: Vec<(char, Style)> = vec![(' ', Style::default()); pad];
+                    for &(c, style, src) in &cells {
+                        let hit = highlights.iter().any(|&(l, s, e)| l == line_idx && s <= src && src < e);
+                        shown.push((c, if hit { theme::find_match() } else { theme::text().patch(style) }));
+                    }
+                    if let Some((c, style)) = rendered.fill {
+                        shown.extend(std::iter::repeat_n((c, style), width.saturating_sub(shown.len())));
+                    }
+                    spans.extend(shown.into_iter().take(width).map(|(c, style)| Span::styled(c.to_string(), style)));
+                } else {
+                    let start = local * width;
+                    for &(c, style, src) in cells.iter().skip(start).take(width) {
+                        let hit = highlights.iter().any(|&(l, s, e)| l == line_idx && s <= src && src < e);
+                        let paint = if hit { theme::find_match() } else { theme::text().patch(style) };
+                        spans.push(Span::styled(c.to_string(), paint));
+                    }
+                    if local + 1 == map.rows_of(line_idx) {
+                        if let Some((c, style)) = rendered.fill {
+                            let have = cells.len().saturating_sub(start).min(width);
+                            spans.extend(std::iter::repeat_n(Span::styled(c.to_string(), style), width.saturating_sub(have)));
+                        }
+                    }
                 }
                 lines.push(Line::from(spans));
                 continue;
             }
-            let line = &doc.lines[line_idx];
-            let chars: Vec<char> = line.chars().collect();
-            // Every caret on this line, tagged with whether it is the active one.
-            let mut caret_cols: Vec<(usize, bool)> = Vec::new();
-            if line_idx == cursor_line {
-                caret_cols.push((cursor_col, true));
-            }
-            for e in &doc.extra_carets {
-                if e.0 == line_idx {
-                    caret_cols.push((e.1, false));
-                }
-            }
-            let caret_style = |active: bool| match (active, focused) {
-                (true, true) => theme::caret(),
-                (true, false) => theme::block(theme::pal().ghost),
-                (false, _) => theme::extra_caret(),
-            };
-            let is_cursor_line = line_idx == cursor_line;
-            let number_style = if is_cursor_line {
-                Style::default().fg(theme::pal().hot).add_modifier(Modifier::BOLD)
-            } else {
-                theme::dim()
-            };
-            let mut spans: Vec<Span> = Vec::new();
-            spans.push(Span::styled(
-                format!("{:width$} ", line_idx + 1, width = num_width),
-                number_style,
-            ));
-            let line_roles = syntax.get(i).map(Vec::as_slice).unwrap_or(&[]);
-            for (col, c) in chars.iter().enumerate().skip(left).take(text_width) {
-                let style = match caret_cols.iter().find(|(cc, _)| *cc == col) {
-                    Some((_, active)) => caret_style(*active),
-                    None => {
-                        if in_selection(doc, line_idx, col) {
-                            theme::selection()
-                        } else if highlights
-                            .iter()
-                            .any(|&(l, s, e)| l == line_idx && s <= col && col < e)
-                        {
-                            theme::find_match()
-                        } else {
-                            line_roles
-                                .iter()
-                                .find(|(range, _)| range.contains(&col))
-                                .map(|(_, role)| theme::syntax(*role))
-                                .unwrap_or_else(theme::text)
-                        }
-                    }
-                };
-                spans.push(Span::styled(c.to_string(), style));
-            }
-            // Carets sitting at the end of the line get their own marker cell.
-            for (col, is_active) in &caret_cols {
-                if *col == chars.len() && *col >= left && *col < left + text_width.max(1) {
-                    spans.push(Span::styled(" ", caret_style(*is_active)));
-                }
-            }
-            lines.push(Line::from(spans));
         }
+        let chars: Vec<char> = doc.lines[line_idx].chars().collect();
+        let mut caret_cols: Vec<(usize, bool)> = Vec::new();
+        if line_idx == doc.cursor.0 {
+            caret_cols.push((doc.cursor.1, true));
+        }
+        for caret in &doc.extra_carets {
+            if caret.0 == line_idx {
+                caret_cols.push((caret.1, false));
+            }
+        }
+        let caret_style = |active: bool| match (active, focused) {
+            (true, true) => theme::caret(),
+            (true, false) => theme::block(theme::pal().ghost),
+            (false, _) => theme::extra_caret(),
+        };
+        let line_roles = syntax.get(line_idx.saturating_sub(source.start)).map(Vec::as_slice).unwrap_or(&[]);
+        let start = if width == 0 { 0 } else { local * width };
+        for (col, c) in chars.iter().enumerate().skip(start).take(width) {
+            let style = match caret_cols.iter().find(|(cc, _)| *cc == col) {
+                Some((_, active)) => caret_style(*active),
+                None if in_selection(doc, line_idx, col) => theme::selection(),
+                None if highlights.iter().any(|&(l, s, e)| l == line_idx && s <= col && col < e) => theme::find_match(),
+                None => line_roles.iter().find(|(range, _)| range.contains(&col)).map(|(_, role)| theme::syntax(*role)).unwrap_or_else(theme::text),
+            };
+            spans.push(Span::styled(c.to_string(), style));
+        }
+        if let Some((_, active)) = caret_cols.iter().find(|(col, _)| end_caret(*col, chars.len(), local, width)) {
+            spans.push(Span::styled(" ", caret_style(*active)));
+        }
+        lines.push(Line::from(spans));
+    }
 
     for (row, bg) in tinted_rows {
-        let x = area.x + (num_width + 1) as u16;
-        let tint = Rect::new(x, area.y + row as u16, area.width.saturating_sub(x - area.x), 1);
+        let x = area.x + gutter_w as u16;
+        let tint = Rect::new(x, area.y + row as u16, area.width.saturating_sub(gutter_w as u16), 1);
         frame.buffer_mut().set_style(tint, Style::default().bg(bg));
     }
-    if cursor_line >= top_line && cursor_line - top_line < height {
-        let row = Rect::new(area.x, area.y + (cursor_line - top_line) as u16, area.width, 1);
-        frame.buffer_mut().set_style(row, Style::default().bg(theme::pal().cursor_line));
+    for row in caret_screen {
+        frame.buffer_mut().set_style(Rect::new(area.x, area.y + row as u16, area.width, 1), Style::default().bg(theme::pal().cursor_line));
     }
     frame.render_widget(Paragraph::new(lines), area);
 }
 
-fn scroll_for(top: usize, cursor_line: usize, height: usize) -> usize {
+fn end_caret(col: usize, len: usize, local: usize, width: usize) -> bool {
+    col == len && (if width == 0 { col == 0 } else { col / width == local })
+}
+
+fn scroll_for(top: usize, cursor_row: usize, height: usize) -> usize {
     if height == 0 {
         top
-    } else if cursor_line < top {
-        cursor_line
-    } else if cursor_line >= top + height {
-        cursor_line + 1 - height
+    } else if cursor_row < top {
+        cursor_row
+    } else if cursor_row >= top + height {
+        cursor_row + 1 - height
     } else {
         top
     }
-}
-
-fn max_top(doc: &Document, height: usize) -> usize {
-    doc.lines.len().saturating_sub(height.max(1))
 }
 
 pub fn gutter(doc: &Document) -> usize {
@@ -348,29 +373,52 @@ fn text_width(doc: &Document, area: Rect) -> usize {
     (area.width as usize).saturating_sub(gutter(doc))
 }
 
-fn follow_column(left: usize, col: usize, width: usize) -> usize {
-    if width == 0 || (col >= left && col < left + width) {
-        left
-    } else {
-        col.saturating_sub(width / 2)
+fn screen_map(doc: &Document, width: usize) -> crate::wrap::Map {
+    let view = doc.markdown_view();
+    let counts: Vec<usize> = (0..doc.lines.len()).map(|line| row_count(doc, line, width, view.as_deref())).collect();
+    crate::wrap::Map::from_counts(&counts)
+}
+
+fn row_count(doc: &Document, line: usize, width: usize, view: Option<&crate::markdown::MdView>) -> usize {
+    if width == 0 {
+        return 1;
     }
+    if let Some(view) = view.filter(|_| !doc.is_raw_line(line)) {
+        if let Some(rendered) = view.lines.get(line) {
+            if rendered.nowrap {
+                return 1;
+            }
+            let cells = rendered.cells().len();
+            if rendered.centered && cells <= width {
+                return 1;
+            }
+            return crate::wrap::display_rows(cells, width);
+        }
+    }
+    crate::wrap::rows_for(doc.lines[line].chars().count(), width)
+}
+
+pub fn cursor_visual_row(doc: &Document) -> usize {
+    let width = doc.wrap_width.get();
+    screen_map(doc, width).cursor_row(doc.cursor.0, doc.cursor.1, width)
 }
 
 fn visible_origin(doc: &Document, area: Rect) -> (usize, usize) {
     let height = area.height as usize;
+    let width = text_width(doc, area);
+    doc.wrap_width.set(width);
+    let map = screen_map(doc, width);
     let anchor = Some((doc.cursor, doc.rev()));
-    let (top, left) = if doc.view_anchor.get() == anchor {
-        (doc.scroll_top.get().min(max_top(doc, height)), doc.scroll_left.get())
+    let row = map.cursor_row(doc.cursor.0, doc.cursor.1, width);
+    let top = if doc.view_anchor.get() == anchor {
+        doc.scroll_top.get().min(map.max_top(height))
     } else {
-        (
-            scroll_for(doc.scroll_top.get(), doc.cursor.0, height).min(max_top(doc, height)),
-            follow_column(doc.scroll_left.get(), doc.cursor.1, text_width(doc, area)),
-        )
+        scroll_for(doc.scroll_top.get(), row, height).min(map.max_top(height))
     };
     doc.view_anchor.set(anchor);
     doc.scroll_top.set(top);
-    doc.scroll_left.set(left);
-    (top, left)
+    doc.scroll_left.set(0);
+    (top, 0)
 }
 
 pub fn page_rows(area: Rect, state: &EditorState) -> usize {
@@ -385,16 +433,14 @@ pub fn scroll_view(area: Rect, state: &EditorState, lines: isize) {
     let doc = &state.tabs[state.active];
     let editor = editor_rect_for(area, state.mode);
     let top = visible_origin(doc, editor).0 as isize + lines;
-    doc.scroll_top.set(top.clamp(0, max_top(doc, editor.height as usize) as isize) as usize);
+    let map = screen_map(doc, doc.wrap_width.get());
+    doc.scroll_top.set(top.clamp(0, map.max_top(editor.height as usize) as isize) as usize);
 }
 
-pub fn scroll_sideways(area: Rect, state: &EditorState, cols: isize) {
+pub fn scroll_sideways(area: Rect, state: &EditorState, _cols: isize) {
     let doc = &state.tabs[state.active];
     let editor = editor_rect_for(area, state.mode);
-    let widest = doc.lines.iter().map(|l| l.chars().count()).max().unwrap_or(0);
-    let most = widest.saturating_sub(text_width(doc, editor) / 2);
-    let left = visible_origin(doc, editor).1.saturating_add_signed(cols);
-    doc.scroll_left.set(left.min(most));
+    visible_origin(doc, editor);
 }
 
 fn in_selection(doc: &Document, line_idx: usize, col: usize) -> bool {
@@ -454,13 +500,47 @@ fn centered_pad(rendered: &crate::markdown::RenderedLine, used: usize, width: us
     }
 }
 
+struct Hit {
+    line: usize,
+    local: usize,
+    visual_col: usize,
+    width: usize,
+}
+
+fn locate(editor_area: Rect, mx: u16, my: u16, doc: &Document) -> Option<Hit> {
+    let ex = mx as isize;
+    let ey = my as isize;
+    if ex < editor_area.x as isize
+        || ey < editor_area.y as isize
+        || ex >= (editor_area.x + editor_area.width) as isize
+        || ey >= (editor_area.y + editor_area.height) as isize
+        || editor_area.height == 0
+    {
+        return None;
+    }
+    let width = text_width(doc, editor_area);
+    let (top, _) = visible_origin(doc, editor_area);
+    let (line, local) = screen_map(doc, width).line_at(top + (ey - editor_area.y as isize) as usize)?;
+    let visual_col = ((ex - editor_area.x as isize) as usize).saturating_sub(gutter(doc));
+    Some(Hit { line, local, visual_col, width })
+}
+
+fn display_col(doc: &Document, hit: &Hit) -> Option<(crate::markdown::RenderedLine, usize, usize)> {
+    let view = doc.markdown_view().filter(|_| !doc.is_raw_line(hit.line))?;
+    let rendered = view.lines.get(hit.line)?.clone();
+    let cells = rendered.cells().len();
+    let pad = if rendered.centered && (hit.width == 0 || cells <= hit.width) {
+        centered_pad(&rendered, cells, hit.width)
+    } else {
+        0
+    };
+    let dcol = if hit.width == 0 { hit.visual_col } else { hit.local * hit.width + hit.visual_col };
+    Some((rendered, pad, dcol))
+}
+
 pub fn link_at(editor_area: Rect, mx: u16, my: u16, doc: &Document) -> Option<String> {
-    let (line, _) = mouse_to_doc(editor_area, mx, my, doc)?;
-    let view = doc.markdown_view().filter(|_| !doc.is_raw_line(line))?;
-    let rendered = &view.lines[line];
-    let pad = centered_pad(rendered, rendered.cells().len(), text_width(doc, editor_area));
-    let left = visible_origin(doc, editor_area).1;
-    let dcol = (mx.saturating_sub(editor_area.x) as usize).checked_sub(gutter(doc))? + left;
+    let hit = locate(editor_area, mx, my, doc)?;
+    let (rendered, pad, dcol) = display_col(doc, &hit)?;
     rendered.link_at(dcol.checked_sub(pad)?).map(str::to_string)
 }
 
@@ -471,36 +551,16 @@ pub fn editor_rect_for(area: Rect, mode: Mode) -> Rect {
 /// Map a 0-indexed mouse position to a (line, col) document position, or None if the
 /// click falls outside a real line of the active document.
 pub fn mouse_to_doc(editor_area: Rect, mx: u16, my: u16, doc: &Document) -> Option<(usize, usize)> {
-    let ex = mx as isize;
-    let ey = my as isize;
-    if ex < editor_area.x as isize
-        || ey < editor_area.y as isize
-        || ex >= (editor_area.x + editor_area.width) as isize
-        || ey >= (editor_area.y + editor_area.height) as isize
-    {
-        return None;
-    }
-    let height = editor_area.height as usize;
-    if height == 0 {
-        return None;
-    }
-    let row_in = (ey - editor_area.y as isize) as usize;
-    let col_in = (ex - editor_area.x as isize) as usize;
-    let (top_line, left) = visible_origin(doc, editor_area);
-    let line = top_line + row_in;
-    if line >= doc.lines.len() {
-        return None;
-    }
-    let text_col = col_in.saturating_sub(gutter(doc)) + left;
-    let col = match doc.markdown_view().filter(|_| !doc.is_raw_line(line)) {
-        Some(view) => {
-            let rendered = &view.lines[line];
-            let pad = centered_pad(rendered, rendered.cells().len(), text_width(doc, editor_area));
-            rendered.display_to_source(text_col.saturating_sub(pad), doc.lines[line].chars().count())
+    let hit = locate(editor_area, mx, my, doc)?;
+    let len = doc.lines[hit.line].chars().count();
+    let col = match display_col(doc, &hit) {
+        Some((rendered, pad, dcol)) => rendered.display_to_source(dcol.saturating_sub(pad), len),
+        None => {
+            let raw = if hit.width == 0 { hit.visual_col } else { hit.local * hit.width + hit.visual_col };
+            raw.min(len)
         }
-        None => text_col,
     };
-    Some((line, col))
+    Some((hit.line, col))
 }
 
 fn input_spans(spans: &mut Vec<Span>, label: &'static str, value: &str, focused: bool) {
@@ -711,10 +771,53 @@ fn selection_length(lines: &[String], start: (usize, usize), end: (usize, usize)
 const LOGO: [&str; 4] = ["▄▀▀▀▀▄  ▄▀▀▀▀▄", "█▄▄▄▄█  █▄▄▄▄█", "█       █     ", "▀▄▄▄▄▀  ▀▄▄▄▄▀"];
 
 pub fn modal_rect(area: Rect, state: &EditorState) -> Option<Rect> {
-    state.update.as_ref()?;
+    if state.reload.is_none() && state.update.is_none() {
+        return None;
+    }
     let width = 54.min(area.width);
     let height = 14.min(area.height);
-    Some(Rect::new(area.x + (area.width - width) / 2, area.y + (area.height - height) / 2, width, height))
+    (width > 0 && height > 0).then(|| Rect::new(area.x + (area.width - width) / 2, area.y + (area.height - height) / 2, width, height))
+}
+
+fn render_reload_modal(frame: &mut Frame, state: &EditorState, area: Rect) {
+    let (Some(prompt), Some(rect)) = (state.reload.as_ref(), modal_rect(area, state)) else {
+        return;
+    };
+    let p = theme::pal();
+    let doc = state.tabs.iter().find(|doc| doc.id == prompt.id);
+    let name = doc.map(|doc| doc.name.as_str()).unwrap_or("this file");
+    let inner = crate::hud::draw(frame.buffer_mut(), rect, &crate::hud::Chrome { title: "changed", tag: None, hazard: true });
+    if inner.height < 4 || inner.width == 0 {
+        return;
+    }
+    let reload_y = inner.y + inner.height - 3;
+    let body = Rect::new(inner.x + 1, inner.y, inner.width.saturating_sub(2), reload_y.saturating_sub(inner.y));
+    let mut lines = vec![
+        Line::default(),
+        Line::styled(format!("{name} {}", if prompt.deleted { "was deleted on disk." } else { "changed on disk." }), theme::text()),
+    ];
+    if doc.is_some_and(|doc| doc.dirty) && !prompt.deleted {
+        lines.push(Line::styled("Reloading discards unsaved edits.", Style::default().fg(p.amber).add_modifier(Modifier::BOLD)));
+    }
+    if body.height > 0 {
+        frame.render_widget(Paragraph::new(lines), body);
+    }
+    for (i, label) in ["Reload from disk", "Continue editing"].iter().enumerate() {
+        let selected = prompt.choice == i;
+        let row = Rect::new(inner.x, reload_y + i as u16, inner.width, 1);
+        let mark = if selected { " ▶ " } else { "   " };
+        if selected {
+            frame.buffer_mut().set_style(row, Style::default().bg(p.selection));
+        }
+        let style = if selected {
+            Style::default().fg(p.hot).bg(p.selection).add_modifier(Modifier::BOLD)
+        } else {
+            theme::text()
+        };
+        frame.render_widget(Paragraph::new(Span::styled(format!("{mark}{label}"), style)), row);
+    }
+    let hints = Rect::new(inner.x + 1, inner.y + inner.height - 1, inner.width.saturating_sub(2), 1);
+    crate::hud::hints(frame.buffer_mut(), hints, &[("↑↓", "choose"), ("Enter", "confirm"), ("Esc", "keep editing")]);
 }
 
 fn render_update_modal(frame: &mut Frame, state: &EditorState, area: Rect) {
@@ -1262,38 +1365,186 @@ mod tests {
     }
 
     #[test]
-    fn long_lines_scroll_sideways_to_follow_the_caret() {
+    fn long_lines_wrap_so_the_caret_and_a_click_follow_the_rows() {
         let long: String = (0..200).map(|i| char::from(b'0' + (i % 10) as u8)).collect();
         let mut state = EditorState::new();
-        state.tabs[0] = Document::with_content("t.md", &format!("{}\nshort\n---\n{} [go](#target)", long, "x".repeat(160)));
+        state.tabs[0] = Document::with_content("t.txt", &long);
         state.tabs[0].cursor = (0, 150);
         let area = Rect::new(0, 0, 30, 8);
+        let editor = editor_rect_for(area, state.mode);
         let t = draw(&state, 30, 8);
         let rows = render_rows(t.backend().buffer());
-        let editor = editor_rect_for(area, state.mode);
-        let (top, left) = visible_origin(&state.tabs[0], editor);
-        assert_eq!((top, left), (0, 150 - 28 / 2), "the caret is brought to the middle");
-        assert!(rows[1].starts_with("1 6789"), "{:?}", rows[1]);
-        let caret_x = 2 + (150 - left) as u16;
-        assert_eq!(t.backend().buffer().cell((caret_x, 1)).unwrap().bg, theme::pal().hot);
-        assert_eq!(rows[2].trim_end(), "2", "a short line is scrolled out of view");
-        assert_eq!(rows[3].chars().skip(2).collect::<String>(), "─".repeat(28), "a rule still fills the width");
-        assert_eq!(mouse_to_doc(editor, 5, 1, &state.tabs[0]), Some((0, left + 3)));
-        assert_eq!(areas(area, &state).caret_rows, vec![Rect::new(2, 1, 28, 1)]);
-        assert_eq!(link_at(editor, 2 + (161 - left) as u16, 4, &state.tabs[0]).as_deref(), Some("#target"), "links far to the right stay clickable");
+        assert_eq!(state.tabs[0].scroll_left.get(), 0);
+        assert!(rows[1].starts_with("1 0123456789"), "the first row is the start of the line: {:?}", rows[1]);
+        assert!(rows[6].starts_with("  "), "a continuation has a blank gutter: {:?}", rows[6]);
+        assert_eq!(rows[6].chars().skip(2).take(10).collect::<String>(), "0123456789", "row of columns 140..: {:?}", rows[6]);
+        assert_eq!(t.backend().buffer().cell((12, 6)).unwrap().bg, theme::pal().hot, "column 150 is ten cells into that row");
 
-        scroll_sideways(area, &state, 6);
-        assert_eq!(visible_origin(&state.tabs[0], editor).1, left + 6, "the wheel moves only the view");
-        assert_eq!(state.tabs[0].cursor, (0, 150));
-        scroll_sideways(area, &state, 1000);
-        assert_eq!(visible_origin(&state.tabs[0], editor).1, 200 - 14, "never past the longest line");
-        state.tabs[0].cursor = (0, 199);
-        assert_eq!(areas(area, &state).caret_rows, vec![Rect::new(2, 1, 200 - 186, 1)], "only the part of the line on screen, without moving a view that already shows the caret");
-
+        state.apply(crate::keys::Action::Down);
+        assert_eq!(state.tabs[0].cursor, (0, 178), "down keeps visual column 10");
         state.apply(crate::keys::Action::Home);
         let rows = render_rows(draw(&state, 30, 8).backend().buffer());
-        assert!(rows[1].starts_with("1 0123456789"), "Home scrolls back: {:?}", rows[1]);
-        assert_eq!(rows[2].trim_end(), "2 short");
+        assert!(rows[1].starts_with("1 0123456789"), "Home is the start of the source line: {:?}", rows[1]);
+
+        state.tabs[0].cursor = (0, 150);
+        scroll_sideways(area, &state, 40);
+        assert_eq!((state.tabs[0].scroll_left.get(), state.tabs[0].cursor), (0, (0, 150)), "the sideways wheel does not pan");
+        let doc = &state.tabs[0];
+        assert_eq!(mouse_to_doc(editor, 5, editor.y + 1, doc), Some((0, 31)), "the second row starts at column 28");
+        state.tabs[0].cursor = (0, 200);
+        draw(&state, 30, 8);
+        assert_eq!(mouse_to_doc(editor, 6, 6, &state.tabs[0]), Some((0, 200)), "the cell past the last character is the end of the line");
+    }
+
+    #[test]
+    fn a_selection_and_a_second_caret_paint_on_the_row_they_wrap_onto() {
+        let long: String = (0..80).map(|i| char::from(b'a' + (i % 26) as u8)).collect();
+        let mut state = EditorState::new();
+        state.tabs[0] = Document::with_content("t.txt", &long);
+        state.tabs[0].selection = Some(((0, 20), (0, 40)));
+        state.tabs[0].cursor = (0, 80);
+        let area = Rect::new(0, 0, 30, 8);
+        let t = draw(&state, 30, 8);
+        let bg = |x, y| t.backend().buffer().cell((x, y)).unwrap().bg;
+        let sel = theme::pal().selection;
+        for x in 22..30 {
+            assert_eq!(bg(x, 1), sel, "columns 20..28 of the first row, x={x}");
+        }
+        for x in 2..14 {
+            assert_eq!(bg(x, 2), sel, "columns 28..40 of the next row, x={x}");
+        }
+        assert_ne!(bg(21, 1), sel, "the cell before the selection");
+        assert_ne!(bg(14, 2), sel, "the cell after the selection");
+        assert_eq!(areas(area, &state).selection, None, "a selection on two rows is not one glow rect");
+
+        state.tabs[0].selection = None;
+        state.tabs[0].cursor = (0, 30);
+        state.tabs[0].extra_carets = vec![(0, 2)];
+        let t = draw(&state, 30, 8);
+        let bg = |x, y| t.backend().buffer().cell((x, y)).unwrap().bg;
+        assert_eq!(bg(4, 1), theme::pal().ice, "the extra caret stays on the first row");
+        assert_eq!(bg(4, 2), theme::pal().hot, "the active caret is on the next row, same visual column");
+    }
+
+    #[test]
+    fn paging_a_wrapped_line_keeps_the_caret_on_its_screen_row() {
+        let long: String = (0..400).map(|i| char::from(b'0' + (i % 10) as u8)).collect();
+        let mut state = EditorState::new();
+        state.tabs[0] = Document::with_content("t.txt", &long);
+        let area = Rect::new(0, 0, 30, 8);
+        draw(&state, 30, 8);
+        state.page_rows = page_rows(area, &state);
+        assert_eq!(state.page_rows, 6);
+        let caret_y = |state: &EditorState| {
+            let t = draw(state, 30, 8);
+            (1..7).find(|&y| t.backend().buffer().cell((2, y)).unwrap().bg == theme::pal().hot).unwrap()
+        };
+        let before = caret_y(&state);
+        state.apply(crate::keys::Action::PageDown);
+        assert_eq!(state.tabs[0].cursor, (0, 168), "a page is six rows of 28 columns, still on the same line");
+        assert_eq!(caret_y(&state), before);
+        let t = draw(&state, 30, 8);
+        assert_eq!(t.backend().buffer().cell((2, before)).unwrap().symbol(), "8");
+    }
+
+    #[test]
+    fn a_wrapped_markdown_line_is_clickable_and_a_rule_stays_one_row() {
+        let mut state = EditorState::new();
+        let body = format!("{} [go](#target)", "x".repeat(40));
+        state.tabs[0] = Document::with_content("t.md", &format!("{body}\nshort\n---\n\n# target"));
+        state.tabs[0].cursor = (1, 0);
+        let area = Rect::new(0, 0, 30, 12);
+        let editor = editor_rect_for(area, Mode::Normal);
+        let t = draw(&state, 30, 12);
+        let rows = render_rows(t.backend().buffer());
+        let doc = &state.tabs[0];
+        assert_eq!(link_at(editor, 15, editor.y + 1, doc).as_deref(), Some("#target"));
+        assert_eq!(mouse_to_doc(editor, 15, editor.y + 1, doc), Some((0, 42)), "the g in [go](#target)");
+        let rule = rows.iter().find(|row| row.contains('─')).expect("the rule is on screen");
+        assert_eq!(rule.chars().filter(|c| *c == '─').count(), 28, "the rule fills the text width once: {rule}");
+        assert_eq!(rows.iter().filter(|row| row.contains('─')).count(), 1);
+
+        state.tabs[0] = Document::with_content("t.md", &format!("<div align=\"center\">\n\n{}\n\n</div>", "y".repeat(40)));
+        state.tabs[0].cursor = (0, 0);
+        let t = draw(&state, 30, 12);
+        let rows = render_rows(t.backend().buffer());
+        let first = rows.iter().position(|row| row.contains('y')).unwrap();
+        assert_eq!(rows[first].find('y'), Some(2), "wider than the screen, so it is not centred: {:?}", rows[first]);
+        assert!(rows[first + 1].contains('y'), "the rest wraps: {:?}", rows[first + 1]);
+        assert_eq!(mouse_to_doc(editor, 2, (first + 1) as u16, &state.tabs[0]), Some((2, 28)));
+    }
+
+    #[test]
+    fn a_rendered_markdown_table_stays_one_row_and_the_caret_line_still_wraps() {
+        let mut state = EditorState::new();
+        let src = "\
+| left | right |
+|---|---|
+| aaaaaaaa | bbbbbbbbbbbbbbbbbbbbbbbbb |
+
+after
+xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx";
+        state.tabs[0] = Document::with_content("t.md", src);
+        state.tabs[0].cursor = (4, 0);
+        let area = Rect::new(0, 0, 30, 12);
+        let editor = editor_rect_for(area, Mode::Normal);
+        let rows = render_rows(draw(&state, 30, 12).backend().buffer());
+        let body = rows.iter().position(|row| row.contains("aaaaaaaa")).unwrap();
+        assert!(rows[body].contains('│'), "the table is rendered: {:?}", rows[body]);
+        assert!(rows[body + 1].starts_with("4 "), "the next source line follows at once: {:?}", rows[body + 1]);
+        assert!(!rows[body + 1].contains('b'), "the rest of the row is clipped: {:?}", rows[body + 1]);
+        let rule = rows.iter().position(|row| row.contains('═')).unwrap();
+        assert_eq!(rows.iter().filter(|row| row.contains('═')).count(), 1, "the rule is one row: {:?}", rows[rule]);
+        let xrow = rows.iter().position(|row| row.contains('x')).unwrap();
+        assert!(rows[xrow + 1].starts_with("  ") && rows[xrow + 1].contains('x'), "a plain line still wraps: {:?}", rows[xrow + 1]);
+        assert_eq!(mouse_to_doc(editor, 4, body as u16, &state.tabs[0]), Some((2, 2)), "the first a");
+
+        state.tabs[0].cursor = (2, 0);
+        let rows = render_rows(draw(&state, 30, 12).backend().buffer());
+        let raw = rows.iter().position(|row| row.contains("aaaaaaaa")).unwrap();
+        assert!(rows[raw].contains('|'), "the caret line shows the source: {:?}", rows[raw]);
+        assert!(rows[raw + 1].starts_with("  ") && rows[raw + 1].contains('b'), "that source still wraps: {:?}", rows[raw + 1]);
+    }
+
+    #[cfg(feature = "lang-rust")]
+    #[test]
+    fn a_string_keeps_its_colour_on_the_next_wrapped_row() {
+        let source = "let s = \"0123456789abcdefghijklmnopqrstuvwxyz\";";
+        let mut state = EditorState::new();
+        state.tabs[0] = Document::with_content("a.rs", source);
+        state.tabs[0].cursor = (0, source.chars().count());
+        let t = draw(&state, 30, 8);
+        let buf = t.backend().buffer();
+        assert_eq!(buf.cell((2, 1)).unwrap().fg, theme::pal().ice, "let");
+        assert_eq!(buf.cell((2, 2)).unwrap().fg, theme::pal().amber, "the string continues on the next row");
+    }
+
+    #[test]
+    fn the_reload_modal_marks_the_chosen_row() {
+        let mut state = EditorState::new();
+        state.tabs[0].name = "notes.txt".into();
+        state.reload = Some(crate::state::ReloadPrompt { id: state.tabs[0].id, choice: 0, deleted: false });
+        let rows = render_rows(draw(&state, 80, 24).backend().buffer());
+        assert!(rows.iter().any(|row| row.contains("CHANGED")));
+        assert!(rows.iter().any(|row| row.contains("notes.txt changed on disk.")));
+        assert!(rows.iter().any(|row| row.contains("╱╱╱╱╱╱")));
+        let marked = rows.iter().find(|row| row.contains('▶')).unwrap();
+        assert!(marked.contains("Reload from disk"), "{marked}");
+        assert!(rows.iter().any(|row| row.contains("Continue editing")));
+        assert!(rows.iter().any(|row| row.contains("↑↓") && row.contains("choose") && row.contains("Esc")));
+
+        state.reload.as_mut().unwrap().choice = 1;
+        state.tabs[0].dirty = true;
+        let rows = render_rows(draw(&state, 80, 24).backend().buffer());
+        let marked = rows.iter().find(|row| row.contains('▶')).unwrap();
+        assert!(marked.contains("Continue editing"), "{marked}");
+        assert!(rows.iter().any(|row| row.contains("Reloading discards unsaved edits.")));
+
+        state.tabs[0].dirty = false;
+        state.reload.as_mut().unwrap().deleted = true;
+        let rows = render_rows(draw(&state, 80, 24).backend().buffer());
+        assert!(rows.iter().any(|row| row.contains("notes.txt was deleted on disk.")));
+        assert!(!rows.iter().any(|row| row.contains("discards")));
     }
 
     #[test]

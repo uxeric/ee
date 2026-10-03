@@ -34,6 +34,7 @@ pub struct RenderedLine {
     pub bg: Option<Color>,
     pub centered: bool,
     pub anchor: Option<String>,
+    pub nowrap: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -912,6 +913,7 @@ fn table_row(
         rl.segs.push(filler(" ".repeat(right + 1), end));
         rl.segs.push(Seg { text: "│".into(), style: border, src: cc(to)..cc(to) + 1, verbatim: false, link: None });
     }
+    rl.nowrap = true;
     rl
 }
 
@@ -921,6 +923,7 @@ fn table_rule(widths: &[usize], line_len: usize) -> RenderedLine {
     let style = Style::default().fg(pal().ice);
     RenderedLine {
         segs: vec![Seg { text, style, src: 0..line_len, verbatim: false, link: None }],
+        nowrap: true,
         ..Default::default()
     }
 }

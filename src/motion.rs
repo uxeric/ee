@@ -119,7 +119,7 @@ impl Motion {
                     self.add(Slot::Sent, fx::parallel(&packets));
                 }
             }
-            Cue::UpdateOffered => {
+            Cue::UpdateOffered | Cue::ReloadOffered => {
                 if let Some(modal) = areas.modal {
                     self.add(Slot::Modal, decrypt(620).with_area(modal));
                 }
@@ -553,6 +553,7 @@ mod tests {
             Cue::PickerOpened,
             Cue::PickerMoved,
             Cue::UpdateOffered,
+            Cue::ReloadOffered,
         ]
     }
 

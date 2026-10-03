@@ -1,5 +1,6 @@
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
+use std::time::SystemTime;
 
 use crate::markdown::{self, MdView};
 
@@ -13,6 +14,18 @@ fn next_id() -> u64 {
 }
 
 type Selection = ((usize, usize), (usize, usize));
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DiskStamp {
+    Absent,
+    Present { modified: SystemTime, len: u64 },
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DiskKind {
+    Changed,
+    Deleted,
+}
 
 fn char_class(c: char) -> u8 {
     if c.is_alphanumeric() || c == '_' {
@@ -89,6 +102,8 @@ pub struct Document {
     pub scroll_top: Cell<usize>,
     pub scroll_left: Cell<usize>,
     pub view_anchor: Cell<Option<((usize, usize), u64)>>,
+    pub wrap_width: Cell<usize>,
+    disk: Option<DiskStamp>,
     expansions: Vec<(Option<Selection>, (usize, usize))>,
     expanded_to: Option<Selection>,
     undo: Vec<Snapshot>,
@@ -115,6 +130,8 @@ impl Document {
             scroll_top: Cell::new(0),
             scroll_left: Cell::new(0),
             view_anchor: Cell::new(None),
+            wrap_width: Cell::new(0),
+            disk: None,
             expansions: Vec::new(),
             expanded_to: None,
             undo: Vec::new(),
@@ -142,6 +159,8 @@ impl Document {
             scroll_top: Cell::new(0),
             scroll_left: Cell::new(0),
             view_anchor: Cell::new(None),
+            wrap_width: Cell::new(0),
+            disk: None,
             expansions: Vec::new(),
             expanded_to: None,
             undo: Vec::new(),
@@ -162,11 +181,13 @@ impl Document {
             doc.lines = if lines.is_empty() { vec![String::new()] } else { lines };
             doc.docx = Some(session);
             doc.path = Some(path.to_string());
+            doc.note_disk();
             return Ok(doc);
         }
         let content = std::fs::read_to_string(path)?;
         let mut doc = Self::with_content(&file_name(path), &content);
         doc.path = Some(path.to_string());
+        doc.note_disk();
         Ok(doc)
     }
 
@@ -183,6 +204,7 @@ impl Document {
                     Self::new(&file_name(path))
                 };
                 doc.path = Some(path.to_string());
+                doc.note_disk();
                 Ok((doc, true))
             }
             other => other.map(|doc| (doc, false)),
@@ -667,9 +689,14 @@ impl Document {
     }
 
     pub fn move_lines(&mut self, delta: isize) {
+        let n = self.lines.len();
         let (line, col) = self.cursor;
-        let target = line.saturating_add_signed(delta).min(self.lines.len() - 1);
-        self.cursor = (target, col.min(self.lines[target].chars().count()));
+        let width = self.wrap_width.get();
+        let next = {
+            let len_of = |i: usize| self.lines[i].chars().count();
+            crate::wrap::shift(n, len_of, line, col, delta, width)
+        };
+        self.cursor = next;
     }
 
     /// Remove a caret position from `extra_carets` so the invariant holds:
@@ -678,38 +705,24 @@ impl Document {
         self.extra_carets.retain(|p| *p != pos);
     }
 
-    /// Move the active caret up, leaving a caret behind at the previous line.
-    pub fn add_caret_up(&mut self) {
-        let (line, col) = self.cursor;
-        if line == 0 {
+    fn add_caret_by(&mut self, delta: isize) {
+        let old = self.cursor;
+        self.move_lines(delta);
+        if self.cursor == old {
             return;
         }
-        let new_line = line - 1;
-        let nc = col.min(self.lines[new_line].chars().count());
-        let new_pos = (new_line, nc);
-        let old_pos = self.cursor;
-        self.remove_extra(new_pos);
-        if old_pos != new_pos {
-            self.extra_carets.push(old_pos);
-        }
-        self.cursor = new_pos;
+        self.remove_extra(self.cursor);
+        self.extra_carets.push(old);
     }
 
-    /// Move the active caret down, leaving a caret behind at the previous line.
+    /// Move the active caret up one visual row, leaving a caret behind.
+    pub fn add_caret_up(&mut self) {
+        self.add_caret_by(-1);
+    }
+
+    /// Move the active caret down one visual row, leaving a caret behind.
     pub fn add_caret_down(&mut self) {
-        let (line, col) = self.cursor;
-        if line + 1 >= self.lines.len() {
-            return;
-        }
-        let new_line = line + 1;
-        let nc = col.min(self.lines[new_line].chars().count());
-        let new_pos = (new_line, nc);
-        let old_pos = self.cursor;
-        self.remove_extra(new_pos);
-        if old_pos != new_pos {
-            self.extra_carets.push(old_pos);
-        }
-        self.cursor = new_pos;
+        self.add_caret_by(1);
     }
 
     /// Add (or remove, if it already exists) a caret at an explicit position.
@@ -1684,22 +1697,74 @@ impl Document {
 
     /// Write `path`. A `.docx` path saves the package; anything else saves the lines as text.
     pub fn write_to(&mut self, path: &str) -> std::io::Result<Option<String>> {
-        if !crate::docx::is_path(path) {
+        let note = if !crate::docx::is_path(path) {
             std::fs::write(path, self.full_content().as_bytes())?;
             self.docx = None;
-            return Ok(None);
-        }
-        if self.docx.is_none() {
-            let (lines, session) = crate::docx::from_lines(&self.lines)?;
-            self.lines = lines;
-            self.docx = Some(session);
+            None
+        } else {
+            if self.docx.is_none() {
+                let (lines, session) = crate::docx::from_lines(&self.lines)?;
+                self.lines = lines;
+                self.docx = Some(session);
+                self.clamp_carets();
+            }
+            let settled = self.settle_docx();
+            let (bytes, note) = self.docx.as_mut().unwrap().save(&mut self.lines)?;
             self.clamp_carets();
+            std::fs::write(path, &bytes)?;
+            note.or(settled)
+        };
+        self.disk = Some(stamp_file(path));
+        Ok(note)
+    }
+
+    pub(crate) fn note_disk(&mut self) {
+        if let Some(path) = self.path.clone() {
+            self.disk = Some(stamp_file(&path));
         }
-        let settled = self.settle_docx();
-        let (bytes, note) = self.docx.as_mut().unwrap().save(&mut self.lines)?;
+    }
+
+    pub(crate) fn disk_change(&self) -> Option<DiskKind> {
+        let path = self.path.as_deref()?;
+        let was = self.disk?;
+        let now = stamp_file(path);
+        if now == was {
+            return None;
+        }
+        Some(match (was, now) {
+            (DiskStamp::Present { .. }, DiskStamp::Absent) => DiskKind::Deleted,
+            _ => DiskKind::Changed,
+        })
+    }
+
+    /// Replace the buffer from the file at `path`. The open text is one undo step.
+    pub fn reload_from_disk(&mut self) -> std::io::Result<()> {
+        let path = self.path.clone().ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "no path"))?;
+        let fresh = Self::from_file(&path)?;
+        self.undo.push(self.capture());
+        if self.undo.len() > MAX_UNDO {
+            self.undo.remove(0);
+        }
+        self.redo.clear();
+        self.lines = fresh.lines;
+        self.docx = fresh.docx;
+        self.selection = None;
+        self.occurrences.clear();
+        self.extra_carets.clear();
+        self.expansions.clear();
+        self.expanded_to = None;
+        self.rev += 1;
+        self.dirty = false;
         self.clamp_carets();
-        std::fs::write(path, &bytes)?;
-        Ok(note.or(settled))
+        self.disk = fresh.disk;
+        Ok(())
+    }
+}
+
+fn stamp_file(path: &str) -> DiskStamp {
+    match std::fs::metadata(path) {
+        Ok(meta) => DiskStamp::Present { modified: meta.modified().unwrap_or(SystemTime::UNIX_EPOCH), len: meta.len() },
+        Err(_) => DiskStamp::Absent,
     }
 }
 
@@ -2010,6 +2075,54 @@ mod tests {
         d.add_caret_down();
         assert_eq!(d.cursor, (2, 0));
         assert_eq!(d.extra_carets, vec![(0, 0), (1, 0)]);
+    }
+
+    #[test]
+    fn wrapped_lines_move_by_visual_rows_and_home_and_end_stay_on_the_source_line() {
+        let mut d = doc_with("0123456789abcdefghij\nab\n0123456789abcdefghij");
+        d.wrap_width.set(10);
+        d.cursor = (0, 15);
+        d.move_lines(3);
+        assert_eq!(d.cursor, (2, 5), "one move keeps column 5 across the short line");
+        d.cursor = (0, 15);
+        d.move_lines(1);
+        assert_eq!(d.cursor, (0, 20), "the first row down lands on the end of the line");
+        d.move_lines(1);
+        assert_eq!(d.cursor, (1, 0), "the next move starts from column 0, where that caret landed");
+        d.cursor = (0, 15);
+        d.home();
+        assert_eq!(d.cursor, (0, 0), "Home is the start of the source line");
+        d.cursor = (0, 15);
+        d.end();
+        assert_eq!(d.cursor, (0, 20), "End is the end of the source line");
+        d.selection = Some(((0, 18), (1, 2)));
+        assert_eq!(d.selected_text().as_deref(), Some("ij\nab"));
+    }
+
+    #[test]
+    fn several_carets_select_by_visual_rows_until_one_crosses_a_line() {
+        let mut d = doc_with("0123456789abcdefghij\nshort");
+        d.wrap_width.set(10);
+        d.cursor = (0, 3);
+        d.add_caret_down();
+        assert_eq!(d.cursor, (0, 13));
+        assert_eq!(d.extra_carets, vec![(0, 3)], "the caret left behind stays on the previous wrap row");
+        d.extra_carets.clear();
+        d.cursor = (0, 3);
+        d.move_by(Document::move_down, true);
+        assert_eq!(d.cursor, (0, 13));
+        assert_eq!(d.selection, Some(((0, 3), (0, 13))), "shift+down inside a wrap stays one selection");
+        d.selection = None;
+        d.cursor = (0, 3);
+        d.extra_carets = vec![(0, 14)];
+        d.move_by(Document::move_down, true);
+        assert_eq!(d.cursor, (0, 13));
+        assert_eq!(d.extra_carets, vec![(0, 20)]);
+        assert_eq!(d.occurrences, vec![(0, 3, 13), (0, 14, 20)], "both carets stay on the line, so both ranges count");
+        d.move_by(Document::move_down, true);
+        assert_eq!(d.cursor, (0, 20));
+        assert_eq!(d.extra_carets, vec![(1, 0)], "the caret that was at the end steps onto the next line");
+        assert_eq!(d.occurrences, vec![(0, 3, 20)], "a caret that crosses a source line keeps no range");
     }
 
     #[test]

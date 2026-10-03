@@ -14,6 +14,7 @@ mod syntax;
 mod theme;
 mod update;
 mod ui;
+mod wrap;
 
 use std::env;
 use std::io::{stdout, Stdout};
@@ -207,7 +208,13 @@ fn run(terminal: &mut Terminal<CrosstermBackend<Stdout>>, state: &mut EditorStat
         if interrupts(&event) {
             motion.interrupt();
         }
-        let keep_running = match event {
+        let had_reload = state.reload.is_some();
+        state.look_for_disk_changes();
+        let just_opened = state.reload.is_some() && !had_reload;
+        let keep_running = if just_opened {
+            true
+        } else {
+            match event {
             Event::Key(key_event) => {
                 let search = double_shift.feed(&key_event, Instant::now());
                 let action = if search {
@@ -222,6 +229,7 @@ fn run(terminal: &mut Terminal<CrosstermBackend<Stdout>>, state: &mut EditorStat
                     None => true,
                 }
             }
+            Event::Mouse(_) | Event::Paste(_) if state.reload.is_some() => true,
             Event::Mouse(mouse)
                 if mouse.kind == MouseEventKind::Down(MouseButton::Left)
                     && ui::help_button(area, state).is_some_and(|b| b.contains(ratatui::layout::Position::new(mouse.column, mouse.row))) =>
@@ -296,6 +304,7 @@ fn run(terminal: &mut Terminal<CrosstermBackend<Stdout>>, state: &mut EditorStat
                 state.apply(Action::InsertText(text))
             }
             _ => true,
+        }
         };
         let areas = ui::areas(area, state);
         for cue in state.take_cues() {

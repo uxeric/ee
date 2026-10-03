@@ -69,6 +69,7 @@ pub enum Cue {
     PickerOpened,
     PickerMoved,
     UpdateOffered,
+    ReloadOffered,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -95,6 +96,12 @@ pub struct FindBar {
 
 pub type Hit = (usize, usize, usize, usize);
 
+pub struct ReloadPrompt {
+    pub id: u64,
+    pub choice: usize,
+    pub deleted: bool,
+}
+
 pub struct EditorState {
     pub tabs: Vec<Document>,
     pub active: usize,
@@ -112,6 +119,7 @@ pub struct EditorState {
     last_edit: Option<(u64, (usize, usize))>,
     drag_anchor: Option<(usize, usize)>,
     pub update: Option<(String, String)>,
+    pub reload: Option<ReloadPrompt>,
     pub restart_for_update: bool,
     pub help: bool,
     pub page_rows: usize,
@@ -148,6 +156,7 @@ impl EditorState {
             last_edit: None,
             drag_anchor: None,
             update: None,
+            reload: None,
             restart_for_update: false,
             help: false,
             page_rows: 1,
@@ -198,6 +207,9 @@ impl EditorState {
         self.status.clear();
         self.alert = None;
         let pending = self.pending.take();
+        if self.reload.is_some() {
+            return self.apply_reload(action, pending);
+        }
         if self.update.is_some() {
             return self.apply_update_offer(action, pending);
         }
@@ -232,9 +244,11 @@ impl EditorState {
 
     fn page(&mut self, direction: isize, select: bool) {
         let rows = direction * self.page_rows.max(1) as isize;
-        let doc = self.active_doc();
-        doc.move_by(|d| d.move_lines(rows), select);
-        doc.scroll_top.set(doc.scroll_top.get().saturating_add_signed(rows));
+        let before = crate::ui::cursor_visual_row(&self.tabs[self.active]);
+        self.tabs[self.active].move_by(|d| d.move_lines(rows), select);
+        let after = crate::ui::cursor_visual_row(&self.tabs[self.active]);
+        let top = self.tabs[self.active].scroll_top.get().saturating_add_signed(after as isize - before as isize);
+        self.tabs[self.active].scroll_top.set(top);
     }
 
     fn apply_normal(&mut self, action: Action, pending: Option<Pending>) -> bool {
@@ -458,6 +472,85 @@ impl EditorState {
     pub fn offer_update(&mut self, from: String, to: String) {
         self.update = Some((from, to));
         self.cues.push(Cue::UpdateOffered);
+    }
+
+    pub fn look_for_disk_changes(&mut self) {
+        if self.reload.is_some() || self.update.is_some() {
+            return;
+        }
+        let n = self.tabs.len();
+        let order: Vec<usize> = std::iter::once(self.active).chain((0..n).filter(|&i| i != self.active)).collect();
+        for i in order {
+            let Some(kind) = self.tabs[i].disk_change() else {
+                continue;
+            };
+            let deleted = kind == crate::document::DiskKind::Deleted;
+            let dirty = self.tabs[i].dirty;
+            self.reload = Some(ReloadPrompt {
+                id: self.tabs[i].id,
+                choice: if dirty || deleted { 1 } else { 0 },
+                deleted,
+            });
+            self.cues.push(Cue::ReloadOffered);
+            return;
+        }
+    }
+
+    fn apply_reload(&mut self, action: Action, pending: Option<Pending>) -> bool {
+        match action {
+            Action::Quit => return self.quit(pending == Some(Pending::Quit)),
+            Action::Up | Action::Left => {
+                if let Some(prompt) = &mut self.reload {
+                    prompt.choice = prompt.choice.saturating_sub(1);
+                }
+            }
+            Action::Down | Action::Right => {
+                if let Some(prompt) = &mut self.reload {
+                    prompt.choice = (prompt.choice + 1).min(1);
+                }
+            }
+            Action::ClearExtraCaret => self.keep_open_version(),
+            Action::Newline => {
+                let reload = self.reload.as_ref().is_some_and(|prompt| prompt.choice == 0);
+                if reload {
+                    self.reload_chosen();
+                } else {
+                    self.keep_open_version();
+                }
+            }
+            _ => {}
+        }
+        true
+    }
+
+    fn keep_open_version(&mut self) {
+        let Some(prompt) = self.reload.take() else {
+            return;
+        };
+        if let Some(doc) = self.tabs.iter_mut().find(|doc| doc.id == prompt.id) {
+            let name = doc.name.clone();
+            doc.note_disk();
+            self.status = format!("keeping the open version of {name}");
+        }
+    }
+
+    fn reload_chosen(&mut self) {
+        let Some(prompt) = self.reload.take() else {
+            return;
+        };
+        let Some(i) = self.tabs.iter().position(|doc| doc.id == prompt.id) else {
+            return;
+        };
+        let name = self.tabs[i].name.clone();
+        match self.tabs[i].reload_from_disk() {
+            Ok(()) => self.status = format!("reloaded {name}"),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                self.tabs[i].note_disk();
+                self.tabs[i].dirty = true;
+                self.fail(format!("{name} is no longer on disk"));
+            }
+            Err(e) => self.fail(format!("cannot reload {name}: {}", plain(&e))),
+        }
     }
 
     pub fn has_unsaved(&self) -> bool {
@@ -1892,5 +1985,229 @@ mod tests {
         assert_eq!(fs::read_to_string(&path).unwrap(), "zx", "the modal can save");
         assert!(!state.apply(Action::Newline), "Enter restarts");
         assert!(state.restart_for_update);
+    }
+
+    fn rewrite(path: &str, content: &str) {
+        fs::write(path, content).unwrap();
+        let later = std::time::SystemTime::now() + std::time::Duration::from_secs(30);
+        fs::File::options().write(true).open(path).unwrap().set_modified(later).unwrap();
+    }
+
+    #[test]
+    fn a_changed_file_asks_before_reloading_and_arrows_pick_the_answer() {
+        let dir = Scratch::new("reload-ask");
+        let path = dir.write("notes.txt", "one");
+        let mut state = EditorState::new();
+        state.open_path(&path);
+        state.take_cues();
+        state.look_for_disk_changes();
+        assert!(state.reload.is_none(), "an unchanged file stays quiet");
+
+        rewrite(&path, "two");
+        state.look_for_disk_changes();
+        let prompt = state.reload.as_ref().unwrap();
+        assert_eq!((prompt.choice, prompt.deleted), (0, false));
+        assert_eq!(state.take_cues(), vec![Cue::ReloadOffered]);
+        assert_eq!(state.tabs[0].lines, vec!["one".to_string()], "asking does not change the buffer");
+        assert!(!state.apply(Action::Quit), "quit still leaves, the prompt does not trap it");
+        assert!(state.reload.is_some(), "quitting does not answer the prompt");
+
+        let cursor = state.tabs[0].cursor;
+        state.apply(Action::Down);
+        state.apply(Action::Right);
+        state.apply(Action::InsertChar('Z'));
+        assert_eq!(state.reload.as_ref().unwrap().choice, 1);
+        assert_eq!((state.tabs[0].cursor, state.tabs[0].lines[0].as_str()), (cursor, "one"));
+        state.apply(Action::Down);
+        assert_eq!(state.reload.as_ref().unwrap().choice, 1, "the choice does not wrap");
+        state.apply(Action::Newline);
+        assert!(state.reload.is_none());
+        assert_eq!(state.status, "keeping the open version of notes.txt");
+        assert_eq!(state.tabs[0].lines, vec!["one".to_string()]);
+        state.look_for_disk_changes();
+        assert!(state.reload.is_none(), "continuing acknowledges this version");
+
+        rewrite(&path, "three");
+        state.look_for_disk_changes();
+        assert!(state.reload.is_some());
+        state.apply(Action::ClearExtraCaret);
+        assert_eq!(state.status, "keeping the open version of notes.txt");
+
+        rewrite(&path, "z");
+        state.tabs[0].cursor = (0, 3);
+        state.tabs[0].extra_carets = vec![(0, 1)];
+        state.tabs[0].selection = Some(((0, 0), (0, 2)));
+        state.look_for_disk_changes();
+        assert_eq!(state.reload.as_ref().unwrap().choice, 0);
+        state.apply(Action::Left);
+        assert_eq!(state.reload.as_ref().unwrap().choice, 0, "already on reload");
+        state.apply(Action::Newline);
+        assert_eq!(state.tabs[0].lines, vec!["z".to_string()]);
+        assert_eq!(state.tabs[0].cursor, (0, 1), "the caret is clamped into the new text");
+        assert!(state.tabs[0].extra_carets.is_empty());
+        assert!(state.tabs[0].selection.is_none());
+        assert!(!state.tabs[0].dirty);
+        assert_eq!(state.status, "reloaded notes.txt");
+    }
+
+    #[test]
+    fn a_dirty_buffer_keeps_editing_unless_reload_is_chosen_and_undo_brings_the_edits_back() {
+        let dir = Scratch::new("reload-dirty");
+        let path = dir.write("notes.txt", "one");
+        let mut state = EditorState::new();
+        state.open_path(&path);
+        state.apply(Action::InsertChar('X'));
+        rewrite(&path, "disk");
+        state.look_for_disk_changes();
+        assert_eq!(state.reload.as_ref().unwrap().choice, 1, "unsaved edits default to keeping them");
+        state.apply(Action::SaveAll);
+        assert!(state.tabs[0].dirty, "save is ignored while the prompt is up");
+        assert_eq!(fs::read_to_string(&path).unwrap(), "disk");
+        state.apply(Action::Up);
+        state.apply(Action::Newline);
+        assert_eq!(state.tabs[0].lines, vec!["disk".to_string()]);
+        assert!(!state.tabs[0].dirty);
+        state.apply(Action::Undo);
+        assert_eq!(state.tabs[0].lines, vec!["Xone".to_string()]);
+        assert!(state.tabs[0].dirty);
+    }
+
+    #[test]
+    fn saving_stamps_the_file_so_our_own_write_does_not_ask() {
+        let dir = Scratch::new("reload-save");
+        let path = dir.write("notes.txt", "one");
+        let mut state = EditorState::new();
+        state.open_path(&path);
+        state.apply(Action::InsertChar('X'));
+        state.apply(Action::SaveAll);
+        state.look_for_disk_changes();
+        assert!(state.reload.is_none());
+        assert_eq!(fs::read_to_string(&path).unwrap(), "Xone");
+    }
+
+    #[test]
+    fn a_deleted_file_can_be_kept_or_written_back() {
+        let dir = Scratch::new("reload-gone");
+        let kept = dir.write("kept.txt", "keep me");
+        let mut state = EditorState::new();
+        state.open_path(&kept);
+        fs::remove_file(&kept).unwrap();
+        state.look_for_disk_changes();
+        assert_eq!((state.reload.as_ref().unwrap().deleted, state.reload.as_ref().unwrap().choice), (true, 1));
+        state.apply(Action::Newline);
+        assert_eq!(state.tabs[0].lines, vec!["keep me".to_string()]);
+        assert!(!state.tabs[0].dirty);
+        state.look_for_disk_changes();
+        assert!(state.reload.is_none(), "continuing does not ask about the same deletion");
+
+        let back = dir.write("back.txt", "bring me");
+        state.open_path(&back);
+        fs::remove_file(&back).unwrap();
+        state.look_for_disk_changes();
+        state.apply(Action::Up);
+        state.apply(Action::Newline);
+        let back_tab = &state.tabs[state.active];
+        assert_eq!(back_tab.lines, vec!["bring me".to_string()]);
+        assert!(back_tab.dirty);
+        assert!(state.status.contains("no longer on disk"));
+        state.look_for_disk_changes();
+        assert!(state.reload.is_none(), "the deletion is acknowledged, so the text can be saved back");
+    }
+
+    #[test]
+    fn an_unreadable_replacement_asks_again() {
+        let dir = Scratch::new("reload-dir");
+        let path = dir.write("notes.txt", "one");
+        let mut state = EditorState::new();
+        state.open_path(&path);
+        fs::remove_file(&path).unwrap();
+        fs::create_dir(&path).unwrap();
+        state.look_for_disk_changes();
+        assert!(state.reload.as_ref().is_some_and(|prompt| !prompt.deleted));
+        state.apply(Action::Newline);
+        assert!(state.reload.is_none());
+        assert!(state.status.contains("cannot reload notes.txt"));
+        assert_eq!(state.tabs[0].lines, vec!["one".to_string()]);
+        state.look_for_disk_changes();
+        assert!(state.reload.is_some(), "the failed reload does not acknowledge the change");
+    }
+
+    #[test]
+    fn a_new_file_asks_once_it_appears_on_disk() {
+        let dir = Scratch::new("reload-new");
+        let path = dir.path("fresh.txt");
+        let mut state = EditorState::new();
+        state.open_path(&path);
+        state.look_for_disk_changes();
+        assert!(state.reload.is_none());
+        rewrite(&path, "arrived");
+        state.look_for_disk_changes();
+        assert_eq!(state.reload.as_ref().unwrap().choice, 0);
+        state.apply(Action::Newline);
+        assert_eq!(state.tabs[0].lines, vec!["arrived".to_string()]);
+        assert!(!state.tabs[0].dirty);
+    }
+
+    #[test]
+    fn another_tab_is_asked_after_the_active_one() {
+        let dir = Scratch::new("reload-tabs");
+        let a = dir.write("a.txt", "a");
+        let b = dir.write("b.txt", "b");
+        let mut state = EditorState::new();
+        state.open_path(&a);
+        state.open_path(&b);
+        rewrite(&a, "a2");
+        rewrite(&b, "b2");
+        state.look_for_disk_changes();
+        assert_eq!(state.tabs[state.tabs.iter().position(|doc| doc.id == state.reload.as_ref().unwrap().id).unwrap()].name, "b.txt");
+        state.apply(Action::Newline);
+        state.look_for_disk_changes();
+        assert_eq!(state.tabs[state.tabs.iter().position(|doc| doc.id == state.reload.as_ref().unwrap().id).unwrap()].name, "a.txt");
+        state.apply(Action::ClearExtraCaret);
+        state.look_for_disk_changes();
+        assert!(state.reload.is_none());
+    }
+
+    #[test]
+    fn the_update_offer_holds_off_the_reload_prompt() {
+        let dir = Scratch::new("reload-update");
+        let path = dir.write("notes.txt", "one");
+        let mut state = EditorState::new();
+        state.open_path(&path);
+        state.offer_update("aaaaaaa".into(), "bbbbbbb".into());
+        rewrite(&path, "two");
+        state.look_for_disk_changes();
+        assert!(state.reload.is_none());
+        assert!(state.update.is_some());
+    }
+
+    #[test]
+    fn reloading_a_docx_replaces_the_package_and_a_clean_save_keeps_those_bytes() {
+        let dir = Scratch::new("reload-docx");
+        let path = dir.path("notes.docx");
+        let mut state = EditorState::new();
+        state.open_path(&path);
+        type_text(&mut state, "alpha");
+        state.apply(Action::SaveAll);
+        assert_eq!(state.tabs[0].lines, vec!["alpha".to_string()]);
+
+        let other = dir.path("other.docx");
+        let mut written = EditorState::new();
+        written.open_path(&other);
+        type_text(&mut written, "beta");
+        written.apply(Action::SaveAll);
+        assert_eq!(written.tabs[0].lines, vec!["beta".to_string()]);
+        let beta = fs::read(&other).unwrap();
+        fs::write(&path, &beta).unwrap();
+        let later = std::time::SystemTime::now() + std::time::Duration::from_secs(30);
+        fs::File::options().write(true).open(&path).unwrap().set_modified(later).unwrap();
+
+        state.look_for_disk_changes();
+        assert_eq!(state.reload.as_ref().unwrap().choice, 0);
+        state.apply(Action::Newline);
+        assert_eq!(state.tabs[0].lines, vec!["beta".to_string()]);
+        assert!(!state.tabs[0].dirty);
+        state.apply(Action::SaveAll);
+        assert_eq!(fs::read(&path).unwrap(), beta, "saving without typing returns the bytes that were reloaded");
     }
 }
