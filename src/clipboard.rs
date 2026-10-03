@@ -39,32 +39,6 @@ impl Clipboard {
     }
 }
 
-#[cfg(target_os = "macos")]
-fn copy_commands() -> Vec<Vec<&'static str>> {
-    vec![vec!["pbcopy"]]
-}
-
-#[cfg(target_os = "macos")]
-fn paste_commands() -> Vec<Vec<&'static str>> {
-    vec![vec!["pbpaste"]]
-}
-
-#[cfg(windows)]
-fn copy_commands() -> Vec<Vec<&'static str>> {
-    vec![vec!["clip"]]
-}
-
-#[cfg(windows)]
-fn paste_commands() -> Vec<Vec<&'static str>> {
-    vec![vec![
-        "powershell",
-        "-NoProfile",
-        "-Command",
-        "[Console]::OutputEncoding=[Text.Encoding]::UTF8; Get-Clipboard -Raw",
-    ]]
-}
-
-#[cfg(not(any(windows, target_os = "macos")))]
 fn copy_commands() -> Vec<Vec<&'static str>> {
     let mut cmds = Vec::new();
     if std::env::var_os("WAYLAND_DISPLAY").is_some() {
@@ -77,7 +51,6 @@ fn copy_commands() -> Vec<Vec<&'static str>> {
     cmds
 }
 
-#[cfg(not(any(windows, target_os = "macos")))]
 fn paste_commands() -> Vec<Vec<&'static str>> {
     let mut cmds = Vec::new();
     if std::env::var_os("WAYLAND_DISPLAY").is_some() {
@@ -91,15 +64,7 @@ fn paste_commands() -> Vec<Vec<&'static str>> {
 }
 
 fn encode_for_copy(text: &str) -> Vec<u8> {
-    if cfg!(windows) {
-        let mut out = vec![0xFF, 0xFE];
-        for unit in text.replace('\n', "\r\n").encode_utf16() {
-            out.extend_from_slice(&unit.to_le_bytes());
-        }
-        out
-    } else {
-        text.as_bytes().to_vec()
-    }
+    text.as_bytes().to_vec()
 }
 
 fn system_copy(text: &str) -> bool {
@@ -139,10 +104,7 @@ fn system_paste() -> Option<String> {
             .output();
         if let Ok(out) = output {
             if out.status.success() {
-                let mut text = String::from_utf8_lossy(&out.stdout).replace("\r\n", "\n");
-                if cfg!(windows) && text.ends_with('\n') {
-                    text.pop();
-                }
+                let text = String::from_utf8_lossy(&out.stdout).replace("\r\n", "\n");
                 return Some(text);
             }
         }

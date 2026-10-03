@@ -105,6 +105,14 @@ impl Herdr {
         Ok(Sent { name: name.to_string(), pane_id: id.as_str().unwrap_or_default().to_string() })
     }
 
+    pub fn side_of(&self, pane_id: &str) -> Option<&'static str> {
+        let me = self.pane.as_ref()?;
+        ["right", "left", "down", "up"].into_iter().find(|direction| {
+            self.call("pane.neighbor", json!({ "pane_id": me, "direction": direction }))
+                .is_ok_and(|r| r["neighbor"]["neighbor_pane_id"] == pane_id)
+        })
+    }
+
     pub fn bring_forward(&self, pane_id: &str, desktop: &dyn Desktop) -> bool {
         if self.call("pane.focus", json!({ "pane_id": pane_id })).is_err() {
             return false;
@@ -274,6 +282,18 @@ mod tests {
             self.focused.borrow_mut().push(address.to_string());
             true
         }
+    }
+
+    #[test]
+    fn the_target_panes_side_comes_from_herdrs_neighbors() {
+        let (herdr, seen) = fake_herdr(vec![pane("w1:p1", "t1", None), pane("w1:p3", "t1", None)], Some("w1:p3"));
+        assert_eq!(herdr.side_of("w1:p3"), Some("left"));
+        assert!(seen.lock().unwrap().iter().all(|r| r["params"]["pane_id"] == "w1:p1"), "asked from ee's own pane");
+        assert_eq!(herdr.side_of("w1:p7"), None, "not a neighbor");
+        let (mut herdr, seen) = fake_herdr(vec![pane("w1:p1", "t1", None)], Some("w1:p3"));
+        herdr.pane = None;
+        assert_eq!(herdr.side_of("w1:p3"), None, "outside herdr there is no side");
+        assert!(methods(&seen).is_empty());
     }
 
     #[test]

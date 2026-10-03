@@ -1,6 +1,6 @@
 [package]
 name = "eoe"
-version = "0.6.0"
+version = "0.7.0"
 edition = "2021"
 description = "Eric's Own Editor: a keyboard-first plain-text editor for Omarchy with a cyberpunk look"
 
@@ -13,4 +13,37 @@ ratatui = "0.30"
 tachyonfx = "0.25"
 pulldown-cmark = { version = "0.13", default-features = false }
 serde_json = "1"
+zip = { version = "2", default-features = false, features = ["deflate"] }
 toml = "1"
+tree-sitter = { version = "0.27", optional = true }
+tree-sitter-bash = { version = "0.25", optional = true }
+tree-sitter-css = { version = "0.25", optional = true }
+tree-sitter-go = { version = "0.25", optional = true }
+tree-sitter-html = { version = "0.23", optional = true }
+tree-sitter-java = { version = "0.23", optional = true }
+tree-sitter-javascript = { version = "0.25", optional = true }
+tree-sitter-json = { version = "0.24", optional = true }
+tree-sitter-python = { version = "0.25", optional = true }
+tree-sitter-rust = { version = "0.24", optional = true }
+tree-sitter-toml-ng = { version = "0.7", optional = true }
+tree-sitter-typescript = { version = "0.23", optional = true }
+tree-sitter-yaml = { version = "0.7", optional = true }
+
+[dev-dependencies]
+tree-sitter-highlight = "0.27"
+
+[features]
+default = ["lang-json", "lang-javascript", "lang-typescript", "lang-rust", "lang-bash", "lang-java", "lang-toml", "lang-yaml", "lang-python", "lang-css", "lang-html", "lang-go"]
+syntax = ["dep:tree-sitter"]
+lang-json = ["syntax", "dep:tree-sitter-json"]
+lang-javascript = ["syntax", "dep:tree-sitter-javascript"]
+lang-typescript = ["lang-javascript", "dep:tree-sitter-typescript"]
+lang-rust = ["syntax", "dep:tree-sitter-rust"]
+lang-bash = ["syntax", "dep:tree-sitter-bash"]
+lang-java = ["syntax", "dep:tree-sitter-java"]
+lang-toml = ["syntax", "dep:tree-sitter-toml-ng"]
+lang-yaml = ["syntax", "dep:tree-sitter-yaml"]
+lang-python = ["syntax", "dep:tree-sitter-python"]
+lang-css = ["syntax", "dep:tree-sitter-css"]
+lang-html = ["syntax", "dep:tree-sitter-html"]
+lang-go = ["syntax", "dep:tree-sitter-go"]

@@ -98,6 +98,13 @@ ensure_rust() {
     ok "Rust $(rustc --version | awk '{print $2}')"
 }
 
+ensure_cc() {
+    if command -v cc > /dev/null; then
+        return
+    fi
+    die "ee needs a C compiler to build its syntax colours. Install one with: sudo pacman -S base-devel"
+}
+
 is_checkout() {
     [[ -f "$1/Cargo.toml" ]] && grep -q '^name = "eoe"' "$1/Cargo.toml"
 }
@@ -252,6 +259,7 @@ install_ee() {
         step "installing ee ${rev:-(local build)}"
     fi
     step "compiling (this takes a minute the first time)"
+    ensure_cc
     (cd "$SOURCE" && cargo build --release --locked --quiet) || die "The build failed. The compiler output above says why."
     ok "built target/release/ee"
     step "installing"

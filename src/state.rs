@@ -23,6 +23,37 @@ pub enum Mode {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Toward {
+    Left,
+    Right,
+    Up,
+    Down,
+}
+
+impl Toward {
+    fn from_side(side: Option<&str>) -> Self {
+        match side {
+            Some("left") => Toward::Left,
+            Some("up") => Toward::Up,
+            Some("down") => Toward::Down,
+            _ => Toward::Right,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Departure {
+    pub lines: Vec<usize>,
+    pub top: usize,
+    pub gutter: usize,
+    pub toward: Toward,
+}
+
+pub fn departure(doc: &Document, toward: Toward) -> Departure {
+    Departure { lines: doc.caret_line_indexes(), top: doc.scroll_top.get(), gutter: crate::ui::gutter(doc), toward }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Cue {
     TabNext,
     TabPrev,
@@ -31,7 +62,7 @@ pub enum Cue {
     Matched,
     Saved,
     Sent,
-    Moved,
+    Moved(Departure),
     Warn,
     Error,
     Quit,
@@ -186,9 +217,14 @@ impl EditorState {
             Mode::Picker => self.apply_picker(action, pending),
             Mode::Normal => self.apply_normal(action, pending),
         };
-        if let Some(doc) = self.tabs.get(self.active) {
-            if doc.id == before.0 && doc.rev() != before.1 {
-                self.last_edit = Some((doc.id, doc.cursor));
+        if let Some(doc) = self.tabs.get_mut(self.active) {
+            if doc.id == before.0 {
+                if let Some(note) = doc.settle_docx() {
+                    self.status = note;
+                }
+                if doc.rev() != before.1 {
+                    self.last_edit = Some((doc.id, doc.cursor));
+                }
             }
         }
         keep
@@ -713,10 +749,13 @@ impl EditorState {
             return;
         }
         let doc = &mut self.tabs[self.active];
-        if let Err(e) = fs::write(&target, doc.full_content().as_bytes()) {
-            self.fail(format!("cannot write {}: {}", target, plain(&e)));
-            return;
-        }
+        let note = match doc.write_to(&target) {
+            Ok(note) => note,
+            Err(e) => {
+                self.fail(format!("cannot write {}: {}", target, plain(&e)));
+                return;
+            }
+        };
         doc.name = Path::new(&target)
             .file_name()
             .map(|n| n.to_string_lossy().to_string())
@@ -725,13 +764,20 @@ impl EditorState {
         doc.dirty = false;
         self.mode = Mode::Normal;
         self.cues.push(Cue::Saved);
-        match old {
+        let renamed = match old {
             Some(old) => match fs::remove_file(&old) {
-                Ok(()) => self.status = format!("renamed to {}", target),
-                Err(e) => self.warn(format!("saved as {}, but cannot remove {}: {}", target, old, plain(&e))),
+                Ok(()) => format!("renamed to {}", target),
+                Err(e) => {
+                    self.warn(format!("saved as {}, but cannot remove {}: {}", target, old, plain(&e)));
+                    return;
+                }
             },
-            None => self.status = format!("saved as {}", target),
-        }
+            None => format!("saved as {}", target),
+        };
+        self.status = match note {
+            Some(note) => format!("{renamed}; {note}"),
+            None => renamed,
+        };
     }
 
     fn jump_to_anchor(&mut self, anchor: &str) -> bool {
@@ -784,10 +830,11 @@ impl EditorState {
         let lines = self.tabs[self.active].caret_lines();
         match Herdr::from_env().and_then(|h| h.send(&lines.join("\n")).map(|sent| (h, sent))) {
             Ok((herdr, sent)) if remove => {
+                let leaving = departure(&self.tabs[self.active], Toward::from_side(herdr.side_of(&sent.pane_id)));
                 self.active_doc().remove_caret_lines();
                 let followed = crate::hyprland::Hyprland::detect().is_some_and(|desktop| herdr.bring_forward(&sent.pane_id, &desktop));
                 self.status = format!("moved {} line(s) to {}{}", lines.len(), sent.name, if followed { " and switched to it" } else { "" });
-                self.cues.push(Cue::Moved);
+                self.cues.push(Cue::Moved(leaving));
             }
             Ok((_, sent)) => {
                 self.status = format!("sent {} line(s) to {}", lines.len(), sent.name);
@@ -1007,13 +1054,19 @@ impl EditorState {
         let mut saved = 0;
         let mut failed = 0;
         let mut skipped = 0;
+        let mut notes = Vec::new();
         for doc in &mut self.tabs {
             let path = doc.path.clone();
             match path {
-                Some(p) => match fs::write(p.as_str(), doc.full_content().as_bytes()) {
-                    Ok(_) => {
+                Some(p) => match doc.write_to(&p) {
+                    Ok(note) => {
                         doc.dirty = false;
                         saved += 1;
+                        if let Some(note) = note {
+                            if !notes.contains(&note) {
+                                notes.push(note);
+                            }
+                        }
                     }
                     Err(_) => failed += 1,
                 },
@@ -1033,6 +1086,10 @@ impl EditorState {
             }
             if skipped > 0 {
                 s.push_str(&format!(" ({} skipped)", skipped));
+            }
+            if !notes.is_empty() {
+                s.push_str("; ");
+                s.push_str(&notes.join("; "));
             }
             if failed > 0 {
                 self.fail(s);
@@ -1689,6 +1746,35 @@ mod tests {
     }
 
     #[test]
+    fn shift_page_with_several_carets_moves_them_without_a_selection() {
+        let text: Vec<String> = (0..40).map(|n| format!("line {n:02} here")).collect();
+        let mut state = state_with(&[&text.join("\n")]);
+        state.page_rows = 10;
+        state.tabs[0].cursor = (2, 3);
+        state.tabs[0].extra_carets = vec![(4, 3)];
+        state.apply(Action::SelectPageDown);
+        assert_eq!((state.tabs[0].cursor, state.tabs[0].extra_carets.clone()), ((12, 3), vec![(14, 3)]));
+        assert!(state.tabs[0].occurrences.is_empty(), "a page crosses lines, so no caret keeps a range");
+        assert!(state.tabs[0].selection.is_none());
+    }
+
+    #[cfg(feature = "lang-rust")]
+    #[test]
+    fn renaming_a_text_file_to_rust_starts_highlighting() {
+        use crate::syntax::Role;
+        let dir = Scratch::new("rename-syntax");
+        let old = dir.write("x.txt", "fn main() {}\n");
+        let mut state = EditorState::new();
+        state.open_path(&old);
+        assert!(state.tabs[0].syntax_roles(0..1)[0].is_empty(), "plain text has no colours");
+        state.apply(Action::Rename);
+        state.prompt_input = dir.path("x.rs");
+        state.apply(Action::Newline);
+        assert_eq!(state.tabs[0].name, "x.rs");
+        assert!(state.tabs[0].syntax_roles(0..1)[0].iter().any(|(_, role)| *role == Role::Keyword));
+    }
+
+    #[test]
     fn the_theme_picker_previews_live_restores_on_esc_and_saves_on_enter() {
         use crate::theme::{pal, Roots, NEON_PALETTE};
         use ratatui::style::Color;
@@ -1757,6 +1843,18 @@ mod tests {
         state.apply(Action::ShowHelp);
         assert!(state.apply(Action::Quit), "Ctrl+Q with the sheet open only closes it");
         assert!(!state.help);
+    }
+
+    #[test]
+    fn a_departure_records_the_lines_leaving_and_where_they_were_shown() {
+        let mut state = state_with(&["0\n1\n2\n3\n4\n5\n6\n7\n8\n9"]);
+        let doc = &mut state.tabs[0];
+        doc.cursor = (4, 0);
+        doc.extra_carets = vec![(1, 0), (4, 1)];
+        doc.scroll_top.set(2);
+        assert_eq!(departure(doc, Toward::Left), Departure { lines: vec![1, 4], top: 2, gutter: 3, toward: Toward::Left });
+        assert_eq!(Toward::from_side(Some("up")), Toward::Up);
+        assert_eq!(Toward::from_side(None), Toward::Right, "an unknown side throws right");
     }
 
     #[test]

@@ -214,36 +214,81 @@ fn shields_badge(src: &str) -> Option<(String, Color, String, Color)> {
 }
 
 const HASH_COMMENTS: &[&str] = &[
-    "sh", "bash", "zsh", "shell", "console", "fish", "toml", "python", "py", "yaml", "yml", "ruby", "rb", "conf", "ini",
-    "make", "makefile", "dockerfile",
+    "console", "fish", "toml", "python", "py", "yaml", "yml", "ruby", "rb", "conf", "ini", "make", "makefile",
+    "dockerfile",
 ];
 const SLASH_COMMENTS: &[&str] = &[
-    "rust", "rs", "js", "javascript", "ts", "typescript", "jsx", "tsx", "c", "cpp", "c++", "h", "go", "java", "kotlin",
-    "swift", "jsonc", "json5", "zig", "css", "scss",
+    "c", "cpp", "c++", "h", "go", "kotlin", "swift", "json5", "zig", "css", "scss",
 ];
 
 fn keywords(lang: &str) -> &'static [&'static str] {
     match lang {
-        "sh" | "bash" | "zsh" | "shell" | "console" | "fish" => &[
+        "console" | "fish" => &[
             "if", "then", "else", "elif", "fi", "for", "in", "do", "done", "while", "case", "esac", "function", "export",
             "local", "return", "set", "source",
-        ],
-        "rust" | "rs" => &[
-            "fn", "let", "mut", "pub", "use", "mod", "struct", "enum", "impl", "trait", "match", "if", "else", "for",
-            "while", "loop", "return", "self", "Self", "crate", "const", "static", "as", "in", "where", "async", "await",
-            "move", "ref", "type", "dyn", "unsafe", "true", "false",
         ],
         "python" | "py" => &[
             "def", "class", "import", "from", "return", "if", "elif", "else", "for", "while", "in", "not", "and", "or",
             "with", "as", "try", "except", "None", "True", "False", "lambda", "yield",
         ],
-        "js" | "javascript" | "ts" | "typescript" | "jsx" | "tsx" => &[
-            "const", "let", "var", "function", "return", "if", "else", "for", "while", "import", "export", "from",
-            "class", "new", "async", "await", "true", "false", "null", "undefined", "type", "interface",
-        ],
-        "toml" | "yaml" | "yml" | "json" | "jsonc" | "json5" => &["true", "false", "null"],
+        "toml" | "yaml" | "yml" | "json5" => &["true", "false", "null"],
         _ => &[],
     }
+}
+
+fn segs_from_roles(line: &str, roles: &[(Range<usize>, crate::syntax::Role)]) -> Vec<Seg> {
+    let chars: Vec<char> = line.chars().collect();
+    let n = chars.len();
+    let seg = |a: usize, b: usize, style: Style| Seg {
+        text: chars[a..b].iter().collect(),
+        style,
+        src: a..b,
+        verbatim: true,
+        link: None,
+    };
+    let mut out = Vec::new();
+    let mut i = 0;
+    for (range, role) in roles {
+        let start = range.start.min(n);
+        let end = range.end.min(n);
+        if start > i {
+            out.push(seg(i, start, Style::default().fg(pal().text)));
+        }
+        if start < end {
+            out.push(seg(start, end, crate::theme::syntax(*role)));
+        }
+        i = end;
+    }
+    if i < n {
+        out.push(seg(i, n, Style::default().fg(pal().text)));
+    }
+    out
+}
+
+fn fence_colours(lines: &[String], kinds: &[LineKind]) -> Vec<Option<Vec<Seg>>> {
+    let mut out = vec![None; lines.len()];
+    let mut i = 0;
+    while i < lines.len() {
+        let LineKind::FenceOpen(info) = &kinds[i] else {
+            i += 1;
+            continue;
+        };
+        let mut body = Vec::new();
+        let mut j = i + 1;
+        while j < lines.len() && matches!(kinds[j], LineKind::Code) {
+            body.push(lines[j].clone());
+            j += 1;
+        }
+        if let Some(lang) = crate::syntax::Lang::from_fence(info) {
+            if let Some(hl) = crate::syntax::Highlighter::new(lang, &body) {
+                for (k, roles) in hl.roles(0..body.len()).into_iter().enumerate() {
+                    out[i + 1 + k] = Some(segs_from_roles(&body[k], &roles));
+                }
+            }
+        }
+        i = j.max(i + 1);
+    }
+    out
 }
 
 fn highlight(line: &str, lang: &str) -> Vec<Seg> {
@@ -702,6 +747,7 @@ pub fn build(lines: &[String]) -> MdView {
         }
     }
 
+    let engine = fence_colours(lines, &kinds);
     let out = lines
         .iter()
         .enumerate()
@@ -716,7 +762,7 @@ pub fn build(lines: &[String]) -> MdView {
                 kind = LineKind::Rule;
             }
             let heading = matches!(kind, LineKind::Heading(_));
-            let mut rl = compose(line, kind, ps, quote_lines[li], quote_kind[li], code_lang[li].as_deref());
+            let mut rl = compose(line, kind, ps, quote_lines[li], quote_kind[li], code_lang[li].as_deref(), engine[li].clone());
             rl.centered = centered[li];
             if heading {
                 rl.anchor = Some(slug(&rl.segs.iter().map(|s| s.text.as_str()).collect::<String>()));
@@ -727,7 +773,7 @@ pub fn build(lines: &[String]) -> MdView {
     MdView { lines: out }
 }
 
-fn compose(line: &str, kind: LineKind, ps: Vec<Piece>, in_quote: bool, alert: Option<usize>, lang: Option<&str>) -> RenderedLine {
+fn compose(line: &str, kind: LineKind, ps: Vec<Piece>, in_quote: bool, alert: Option<usize>, lang: Option<&str>, engine: Option<Vec<Seg>>) -> RenderedLine {
     let cc = |b: usize| line[..b].chars().count();
     let n = line.chars().count();
     let dim = Style::default().fg(pal().ghost);
@@ -752,7 +798,7 @@ fn compose(line: &str, kind: LineKind, ps: Vec<Piece>, in_quote: bool, alert: Op
         }
         LineKind::Code => {
             rl.bg = Some(pal().code_bg);
-            rl.segs = highlight(line, lang.unwrap_or(""));
+            rl.segs = engine.unwrap_or_else(|| highlight(line, lang.unwrap_or("")));
             return rl;
         }
         LineKind::AlertTitle(i) => {
@@ -995,9 +1041,9 @@ mod tests {
         let code = "```sh\necho \"hi\" # note\n```\n```diff\n+ add\n- drop\n```";
         let cases = [
             ("> [!TIP]\n> go", 1, '▌', pal().neon, "tip bar"),
-            (code, 1, 'e', pal().text, "command"),
+            (code, 1, 'e', if cfg!(feature = "lang-bash") { pal().neon } else { pal().text }, "command"),
             (code, 1, 'i', pal().amber, "string"),
-            (code, 1, 'n', pal().ghost, "comment"),
+            (code, 1, 'n', if cfg!(feature = "lang-bash") { pal().ghost } else { pal().text }, "comment"),
             (code, 4, 'a', pal().ice, "diff addition"),
             (code, 5, 'd', pal().hot, "diff removal"),
         ];
@@ -1033,5 +1079,43 @@ mod tests {
         assert_eq!(line.link_at(col("k")), Some("#keys"));
         assert_eq!(line.link_at(col(" and")), None);
         assert_eq!(v.lines[2].anchor.as_deref(), Some("the-faq"));
+    }
+
+    #[test]
+    fn headings_use_a_colour_per_level() {
+        let v = view("# One\n## Two\n### Three\n#### Four");
+        let cell = |row: usize, ch: char| v.lines[row].cells().into_iter().find(|c| c.0 == ch).unwrap().1;
+        let one = cell(0, 'O');
+        let two = cell(1, 'T');
+        let three = cell(2, 'T');
+        let four = cell(3, 'F');
+        assert_eq!(one.fg, Some(pal().hot));
+        assert!(one.add_modifier.contains(Modifier::BOLD | Modifier::UNDERLINED));
+        assert_eq!(two.fg, Some(pal().amber));
+        assert!(two.add_modifier.contains(Modifier::BOLD));
+        assert!(!two.add_modifier.contains(Modifier::UNDERLINED));
+        assert_eq!(three.fg, Some(pal().ice));
+        assert!(three.add_modifier.contains(Modifier::BOLD));
+        assert_eq!(four.fg, Some(pal().text));
+        assert!(four.add_modifier.contains(Modifier::BOLD));
+    }
+
+    #[cfg(feature = "lang-javascript")]
+    #[test]
+    fn known_fences_colour_across_lines_and_unknown_ones_stay_plain() {
+        let spanned = view("```js\nconst s = `hello\nworld`;\n```");
+        let world = spanned.lines[2].cells().into_iter().find(|c| c.0 == 'w').unwrap();
+        assert_eq!(world.1.fg, Some(pal().amber), "a template literal keeps its colour on the next line");
+
+        let unknown = view("```madeup\nfn main() {}\n```");
+        let f = unknown.lines[1].cells().into_iter().find(|c| c.0 == 'f').unwrap();
+        assert_eq!(f.1.fg, Some(pal().text), "an unknown fence language stays plain");
+
+        let open = view("```js\nconst s = `hello\nworld");
+        assert_eq!(open.lines.len(), 3, "an unterminated fence keeps one row per source line");
+        assert_eq!(open.lines[2].bg, Some(pal().code_bg), "the body stays a code block through the end of the file");
+        let keyword = open.lines[1].cells().into_iter().find(|c| c.0 == 'c').unwrap();
+        assert_eq!(keyword.1.fg, Some(pal().ice), "a token in an unterminated fence is still coloured");
+        assert!(open.lines[2].cells().iter().any(|c| c.0 == 'w'));
     }
 }

@@ -29,7 +29,7 @@ The project is `eoe`, the command is `ee`. Type it, jack in, edit text in neon.
 - [ -- ] plugin system not found (by design)
 ```
 
-`ee` is a plain-text editor for the terminal, built for [Omarchy](https://omarchy.org) (or whatever sub-optimal unix-like system you're running) and for people with WebStorm in their fingers. It does multi-cursor editing, renders markdown live while you write it, sends lines to the agent or shell next to it in [herdr](https://herdr.dev), and animates every move with [tachyonfx](https://github.com/ratatui/tachyonfx). It takes its colours from your Omarchy theme and follows it when you switch, and keeps your terminal's own background, so Omarchy's blur shows through.
+`ee` is a plain-text editor for the terminal, built for [Omarchy](https://omarchy.org) (or whatever sub-optimal unix-like system you're running) and for people with WebStorm in their fingers. It does multi-cursor editing, renders markdown live while you write it, edits Word documents the same way, sends lines to the agent or shell next to it in [herdr](https://herdr.dev), and animates every move with [tachyonfx](https://github.com/ratatui/tachyonfx). It takes its colours from your Omarchy theme and follows it when you switch, and keeps your terminal's own background, so Omarchy's blur shows through.
 
 <img src="assets/readme/divider.svg" width="100%" alt="">
 
@@ -83,6 +83,18 @@ In `.md` files, every line is rendered except the one you're editing, which show
 
 Headings, emphasis, lists, checkboxes, quotes, tables, GitHub alerts, code blocks (highlighted by language), common HTML and shields.io badges all render. Images show as a placeholder. <kbd>Ctrl</kbd>+Click follows a link: to a heading, another file, or your browser.
 
+### Word documents, the same way
+
+A `.docx` file is one paragraph per line. Lines you are not editing render with the same heading, bold, italic, strike, and link colours as markdown. The line under the caret shows the marks: `# `, `**bold**`, `*italic*`, `~~strike~~`, `[label](url)`, `- ` for a bullet, `1. ` for a numbered item, `> ` for a quote. <kbd>Ctrl</kbd>+Click follows a link, and <kbd>Ctrl</kbd>+<kbd>F12</kbd> jumps to a heading.
+
+The file on disk stays a Word document. Open it and save without typing, and the bytes come back unchanged. A change in one paragraph leaves the others, and every table, picture, header, and style, as Word stored them. A typo inside a coloured word keeps that colour and size. Adding or removing bold, italic, or strike updates those marks on the words you changed, and those words then use the editor's colours, so Word's colour and size on them are cleared. Changing a heading, list, or quote marker updates that paragraph's style. The number you type on a list line is how it looks here; Word keeps its own numbering.
+
+Tables and pictures show as `[table]` and `[picture]`. Typing on that line leaves the file alone. Deleting the line removes the table or picture. A paragraph that holds comments, fields, or tracked changes is rewritten from the line when you edit it, and the status bar says so. Underline and highlight stay until you change that paragraph's text or marks. A new `notes.docx` becomes a small valid document the first time you save it.
+
+### Syntax colours
+
+JSON, TOML, YAML, JavaScript (including JSX), TypeScript, TSX, Python, CSS, HTML, Rust, Bash, Java and Go are coloured from the theme you are using: keywords, strings, comments, functions and types each get their own colour, and comments sit back. Markdown fences in those languages use the same colours. An HTML file colours its tags, attributes and comments; JavaScript and CSS written inside it stay plain. A file over 100,000 lines or 5 MB stays plain, and so does a Bash file over 1,500 lines. The status bar says so.
+
 ### Many carets, one keystroke
 
 <p align="center"><img src="assets/readme/multicursor.svg" alt="Three carets added with Ctrl+Down type the same text on three lines at once; then Alt+Shift+E sends all three lines to Claude in the next herdr pane, and a cyan beam crosses the status bar."></p>
@@ -119,7 +131,8 @@ The sent lines answer back: a magenta write head sweeps each one, breaking it in
 | Opening a file | The text decodes in with a cyan glow |
 | Jumping to a match | The match flashes magenta |
 | Opening the find bar | The bar sweeps in |
-| Saving, or moving lines to herdr | A cyan beam crosses the status bar |
+| Saving | A cyan beam crosses the status bar |
+| Moving lines to herdr | Each line is pulled back into a glowing packet and fired out through the edge on the side of the pane it's going to, trailing a beam; then the gap closes. Several carets launch in a volley |
 | Sending to herdr | Each sent line is packetized by a magenta write head and re-forms in cyan |
 | A warning | The status bar flashes amber |
 | An error | The status bar glitches red |
@@ -245,7 +258,7 @@ In the replace bar, <kbd>Tab</kbd> switches between the Find and Replace fields.
 |---|---|
 | Save all | <kbd>Ctrl</kbd>+<kbd>S</kbd> / <kbd>Alt</kbd>+<kbd>S</kbd> |
 | Open or create a file: fuzzy-find files under the current folder, or type a path | <kbd>Ctrl</kbd>+<kbd>N</kbd> / <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>N</kbd> / <kbd>Alt</kbd>+<kbd>N</kbd> |
-| File structure: jump to a markdown heading | <kbd>Ctrl</kbd>+<kbd>F12</kbd> |
+| File structure: jump to a heading in a markdown or Word file | <kbd>Ctrl</kbd>+<kbd>F12</kbd> |
 | Command palette: every action, with its keys | <kbd>Alt</kbd>+<kbd>Shift</kbd>+<kbd>A</kbd> (<kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>A</kbd> with the kitty keyboard protocol) |
 | Keyboard shortcuts: a sheet of the basics, including herdr and the command palette (any key closes it) | <kbd>F1</kbd>, or click **F1 help** at the bottom right |
 | Switch theme: Follow Omarchy, Neon, or any installed Omarchy theme, previewed as you move | <kbd>Alt</kbd>+<kbd>`</kbd> (<kbd>Ctrl</kbd>+<kbd>`</kbd> with the kitty keyboard protocol) |
@@ -352,12 +365,14 @@ flowchart LR
     keys --> main
     main -- Action --> state[state.rs<br>EditorState]
     state --> doc[document.rs<br>lines, carets, undo]
+    doc --> syntax[syntax.rs<br>tree-sitter]
     state --> find[find.rs]
     state --> clip[clipboard.rs]
     state --> herdr[herdr.rs<br>socket API]
     state -- Cue --> motion[motion.rs<br>tachyonfx]
     main --> ui[ui.rs<br>render]
     ui --> md[markdown.rs<br>live preview]
+    ui --> docx[docx.rs<br>Word round-trip]
     ui --> theme[theme.rs<br>palette]
     motion --> ui
 ```
@@ -367,14 +382,16 @@ flowchart LR
 | `src/main.rs` | Terminal setup, the event loop, mouse and paste handling |
 | `src/state.rs` | `EditorState`: tabs, modes (find/replace bar, prompts), find/replace, clipboard actions, open/rename/save |
 | `src/document.rs` | `Document`: lines, selection, the active caret and extra carets, occurrences, edits, undo/redo |
+| `src/syntax.rs` | Tree-sitter highlighting for JSON, TOML, YAML, JavaScript/JSX, TypeScript/TSX, Python, CSS, HTML, Rust, Bash, Java and Go |
 | `src/keys.rs` | The `Action` enum, the keymap, and the find-bar keys |
 | `src/config.rs` | Loads `config.toml`: key remaps and the `Alt` fallback |
 | `src/ui.rs` | Rendering: tab bar, editor, carets and highlights, find bar, prompt, status bar |
 | `src/markdown.rs` | Markdown live preview: one rendered row per source line, with display-to-source column mapping |
+| `src/docx.rs` | Word documents: one paragraph per line, with the original XML copied back except where you edited |
 | `src/motion.rs` | Animations: editor events (`Cue`s) mapped to tachyonfx effects, plus the boot splash |
 | `src/theme.rs` | The palette (neon, or mapped from the Omarchy theme) and shared styles |
 | `src/find.rs` | Text matching, with or without case |
-| `src/clipboard.rs` | System clipboard through platform tools, with the OSC 52 fallback |
+| `src/clipboard.rs` | System clipboard through wl-copy, xclip or xsel, with the OSC 52 fallback |
 | `src/herdr.rs` | Sends lines to another herdr pane over herdr's socket API |
 | `src/update.rs` | The background update check, `ee --update` and `ee --version` |
 

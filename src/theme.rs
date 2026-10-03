@@ -114,7 +114,10 @@ pub fn from_omarchy(colors_toml: &str) -> Option<Palette> {
         text: rgb(foreground),
         void: rgb(background),
         selection: rgb(selection),
-        find_match: rgb(mix(background, ice, 0.3)),
+        find_match: rgb((7..=18)
+            .map(|step| mix(background, ice, step as f32 * 0.05))
+            .find(|s| distance(*s, background) >= 72.0 && distance(*s, cursor_line) >= 56.0 && distance(*s, selection) >= 48.0)
+            .unwrap_or(mix(background, ice, 0.85))),
         cursor_line: rgb(cursor_line),
         code_bg: rgb(tint(0.09)),
         table_head: rgb(mix(background, violet, 0.25)),
@@ -237,6 +240,22 @@ pub fn find_match() -> Style {
     Style::default().fg(pal().ice).bg(pal().find_match)
 }
 
+pub fn syntax(role: crate::syntax::Role) -> Style {
+    use crate::syntax::Role;
+    let p = pal();
+    match role {
+        Role::Keyword | Role::Tag => Style::default().fg(p.ice),
+        Role::String => Style::default().fg(p.amber),
+        Role::Escape | Role::Type => Style::default().fg(p.violet),
+        Role::Constant => Style::default().fg(p.hot),
+        Role::Comment => Style::default().fg(p.ghost).add_modifier(Modifier::ITALIC),
+        Role::Punctuation => Style::default().fg(p.ghost),
+        Role::Function => Style::default().fg(p.neon),
+        Role::Builtin => Style::default().fg(p.hot).add_modifier(Modifier::ITALIC),
+        Role::Property | Role::Plain => Style::default().fg(p.text),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -260,14 +279,53 @@ mod tests {
 
     #[test]
     fn selections_stand_out_from_the_background_and_the_caret_line_in_every_palette() {
-        let apart = |a: Color, b: Color| match (a, b) {
-            (Color::Rgb(r1, g1, b1), Color::Rgb(r2, g2, b2)) => distance((r1, g1, b1), (r2, g2, b2)),
-            _ => 0.0,
-        };
         let light = "background = \"#eff1f5\"\nforeground = \"#4c4f69\"\naccent = \"#1e66f5\"\nmagenta = \"#ea76cb\"\n";
         for (name, p) in [("neon", NEON_PALETTE), ("night-city", from_omarchy(NIGHT_CITY).unwrap()), ("light", from_omarchy(light).unwrap())] {
             assert!(apart(p.selection, p.void) >= 70.0, "{}: selection vs background {}", name, apart(p.selection, p.void));
             assert!(apart(p.selection, p.cursor_line) >= 55.0, "{}: selection vs caret line {}", name, apart(p.selection, p.cursor_line));
+        }
+    }
+
+    fn apart(a: Color, b: Color) -> f32 {
+        match (a, b) {
+            (Color::Rgb(r1, g1, b1), Color::Rgb(r2, g2, b2)) => distance((r1, g1, b1), (r2, g2, b2)),
+            _ => 0.0,
+        }
+    }
+
+    #[test]
+    fn syntax_roles_stay_apart_in_neon_and_a_mapped_theme() {
+        let six = |p: Palette| [p.ice, p.hot, p.amber, p.ghost, p.neon, p.violet];
+        for (name, p) in [("neon", NEON_PALETTE), ("night-city", from_omarchy(NIGHT_CITY).unwrap())] {
+            let cols = six(p);
+            for i in 0..cols.len() {
+                for j in (i + 1)..cols.len() {
+                    let d = apart(cols[i], cols[j]);
+                    assert!(d >= 48.0, "{name}: {d:.1} between role {i} and {j}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn the_current_find_match_stays_apart_from_the_other_matches() {
+        let lumon = "background = \"#16242d\"\nforeground = \"#d6e2ee\"\naccent = \"#8bc9eb\"\ncyan = \"#b4e4f6\"\nblue = \"#6fb8e3\"\nmuted = \"#304860\"\nselection = \"#243d56\"\n";
+        let kanagawa = "background = \"#1f1f28\"\nforeground = \"#dcd7ba\"\naccent = \"#dcd7ba\"\ncyan = \"#6a9589\"\nblue = \"#7e9cd8\"\nmuted = \"#54546D\"\n";
+        let vantablack = "background = \"#000000\"\nforeground = \"#ffffff\"\naccent = \"#8d8d8d\"\ncyan = \"#b0b0b0\"\nblue = \"#8d8d8d\"\n";
+        let cyberpunk = "background = \"#1d1219\"\nforeground = \"#d9cdb1\"\naccent = \"#90b3cf\"\ncyan = \"#a5c6df\"\nblue = \"#90b3cf\"\n";
+        let rose = "background = \"#faf4ed\"\nforeground = \"#575279\"\naccent = \"#56949f\"\ncyan = \"#d7827e\"\nblue = \"#56949f\"\nselection = \"#dfdad9\"\n";
+        let themes = [
+            ("neon", NEON_PALETTE),
+            ("lumon", from_omarchy(lumon).unwrap()),
+            ("kanagawa", from_omarchy(kanagawa).unwrap()),
+            ("vantablack", from_omarchy(vantablack).unwrap()),
+            ("cyberpunk-office", from_omarchy(cyberpunk).unwrap()),
+            ("rose-pine", from_omarchy(rose).unwrap()),
+        ];
+        for (name, p) in themes {
+            assert!(apart(p.find_match, p.void) >= 72.0, "{name}: find match vs background {}", apart(p.find_match, p.void));
+            assert!(apart(p.find_match, p.cursor_line) >= 56.0, "{name}: find match vs caret line {}", apart(p.find_match, p.cursor_line));
+            assert!(apart(p.find_match, p.selection) >= 48.0, "{name}: find match vs other matches {}", apart(p.find_match, p.selection));
         }
     }
 

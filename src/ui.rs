@@ -174,6 +174,7 @@ pub fn areas(area: Rect, state: &EditorState) -> Areas {
         selection,
         caret_rows,
         popup: popup_rect(area, state).or_else(|| help_rect(area, state)),
+        top,
         picker_row: picker_row(area, state),
         modal: modal_rect(area, state),
     }
@@ -217,6 +218,7 @@ fn render_editor(
     let num_width = doc.lines.len().to_string().len();
     let text_width = text_width(doc, area);
     let markdown = doc.markdown_view();
+    let syntax = doc.syntax_roles(top_line..top_line + height);
     let mut tinted_rows: Vec<(usize, Color)> = Vec::new();
 
     let mut lines: Vec<Line> = Vec::new();
@@ -278,6 +280,7 @@ fn render_editor(
                 format!("{:width$} ", line_idx + 1, width = num_width),
                 number_style,
             ));
+            let line_roles = syntax.get(i).map(Vec::as_slice).unwrap_or(&[]);
             for (col, c) in chars.iter().enumerate().skip(left).take(text_width) {
                 let style = match caret_cols.iter().find(|(cc, _)| *cc == col) {
                     Some((_, active)) => caret_style(*active),
@@ -290,7 +293,11 @@ fn render_editor(
                         {
                             theme::find_match()
                         } else {
-                            theme::text()
+                            line_roles
+                                .iter()
+                                .find(|(range, _)| range.contains(&col))
+                                .map(|(_, role)| theme::syntax(*role))
+                                .unwrap_or_else(theme::text)
                         }
                     }
                 };
@@ -333,7 +340,7 @@ fn max_top(doc: &Document, height: usize) -> usize {
     doc.lines.len().saturating_sub(height.max(1))
 }
 
-fn gutter(doc: &Document) -> usize {
+pub fn gutter(doc: &Document) -> usize {
     doc.lines.len().to_string().len() + 1
 }
 
@@ -600,6 +607,8 @@ fn render_status_bar(frame: &mut Frame, state: &EditorState, area: Rect) {
             None => Style::default().fg(theme::pal().ice),
         };
         spans.push(Span::styled(format!("   {}", state.status), style));
+    } else if doc.syntax_limited() {
+        spans.push(Span::styled(format!("   {}", crate::syntax::TOO_LARGE), Style::default().fg(theme::pal().amber)));
     }
 
     let mut position = format!("ln {}, col {}", cursor_line + 1, cursor_col + 1);
@@ -852,6 +861,43 @@ mod tests {
     }
 
     #[test]
+    fn docx_lines_hide_markup_off_the_caret_and_clicks_land_on_the_source_char() {
+        let area = Rect::new(0, 0, 40, 10);
+        let editor = editor_rect_for(area, Mode::Normal);
+        let mut state = EditorState::new();
+        state.tabs[0] = Document::with_content("n.docx", "# Chapter\nHello **world**\na \\* b");
+        state.tabs[0].cursor = (1, 0);
+        let mut t = Terminal::new(TestBackend::new(area.width, area.height)).unwrap();
+        t.draw(|f| render(f, &state)).unwrap();
+        let rows = render_rows(t.backend().buffer());
+        let heading = &rows[editor.y as usize];
+        assert!(heading.contains("Chapter") && !heading.contains('#'), "{heading}");
+        let escaped = &rows[editor.y as usize + 2];
+        assert!(escaped.contains("a * b") && !escaped.contains('\\'), "{escaped}");
+        let head = t.backend().buffer().cell((2, editor.y)).unwrap();
+        assert_eq!(head.symbol(), "C");
+        assert_eq!(head.fg, theme::pal().hot);
+        assert!(head.modifier.contains(Modifier::BOLD));
+
+        state.tabs[0].cursor = (0, 0);
+        t.draw(|f| render(f, &state)).unwrap();
+        let rows = render_rows(t.backend().buffer());
+        let bold = &rows[editor.y as usize + 1];
+        assert!(bold.contains("Hello world") && !bold.contains('*'), "{bold}");
+        let world = t.backend().buffer().cell((8, editor.y + 1)).unwrap();
+        assert_eq!(world.symbol(), "w");
+        assert!(world.modifier.contains(Modifier::BOLD), "world is bold");
+        let doc = &state.tabs[0];
+        let source: Vec<char> = doc.lines[1].chars().collect();
+        let row: Vec<char> = rows[editor.y as usize + 1].chars().collect();
+        let start = row.iter().position(|c| *c == 'H').unwrap();
+        for x in start..start + "Hello world".chars().count() {
+            let (line, col) = mouse_to_doc(editor, x as u16, editor.y + 1, doc).unwrap();
+            assert_eq!((line, source[col]), (1, row[x]), "x={}", x);
+        }
+    }
+
+    #[test]
     fn selections_and_occurrences_are_highlighted_and_counted() {
         let mut state = EditorState::new();
         state.tabs[0] = Document::with_content("t", "ab\ncd\nef\ngh\nij");
@@ -1074,6 +1120,113 @@ mod tests {
         assert_eq!(t.backend().buffer().cell((x, 3)).unwrap().bg, theme::pal().find_match, "matches show on rendered markdown too");
     }
 
+    #[cfg(feature = "lang-rust")]
+    #[test]
+    fn syntax_colours_show_on_code_and_give_way_to_the_caret_selection_and_find() {
+        use crate::keys::Action;
+        let mut state = EditorState::new();
+        let source = "fn main() { let s = \"hi\"; let t = \"hi\"; }";
+        let at = |needle: &str| source.find(needle).unwrap();
+        let other = source.rfind("hi").unwrap();
+        state.tabs[0] = Document::with_content("a.rs", source);
+        state.tabs[0].cursor = (0, source.chars().count());
+        let cell = |t: &Terminal<TestBackend>, col: usize| t.backend().buffer().cell((2 + col as u16, 1)).unwrap().clone();
+        let t = draw(&state, 60, 8);
+        assert_eq!(cell(&t, at("fn")).fg, theme::pal().ice, "fn");
+        assert_eq!(cell(&t, at("main")).fg, theme::pal().neon, "main");
+        assert_eq!(cell(&t, at("let")).fg, theme::pal().ice, "let");
+        assert_eq!(cell(&t, at("hi")).fg, theme::pal().amber, "string");
+
+        state.tabs[0].cursor = (0, at("n"));
+        let t = draw(&state, 60, 8);
+        let on_caret = cell(&t, at("n"));
+        assert_eq!((on_caret.fg, on_caret.bg), (theme::pal().void, theme::pal().hot), "the caret covers the keyword");
+
+        state.tabs[0].cursor = (0, source.chars().count());
+        state.tabs[0].selection = Some(((0, at("fn")), (0, at("fn") + 2)));
+        let t = draw(&state, 60, 8);
+        let selected = cell(&t, at("fn"));
+        assert_eq!((selected.fg, selected.bg), (theme::pal().text, theme::pal().selection), "the selection covers the keyword");
+
+        state.tabs[0].selection = None;
+        state.apply(Action::Find);
+        for c in "hi".chars() {
+            state.apply(Action::InsertChar(c));
+        }
+        let t = draw(&state, 80, 8);
+        let current = cell(&t, at("hi"));
+        assert_eq!((current.fg, current.bg), (theme::pal().text, theme::pal().selection), "the current match is a selection");
+        let hit = cell(&t, other);
+        assert_eq!((hit.fg, hit.bg), (theme::pal().ice, theme::pal().find_match), "another match covers the string colour");
+    }
+
+    #[cfg(feature = "lang-rust")]
+    #[test]
+    fn a_theme_switch_recolours_syntax_on_the_next_frame() {
+        let mut state = EditorState::new();
+        state.tabs[0] = Document::with_content("a.rs", "fn main() {}");
+        state.tabs[0].cursor = (0, 12);
+        let neon = draw(&state, 40, 6).backend().buffer().cell((3, 1)).unwrap().fg;
+        assert_eq!(neon, theme::NEON_PALETTE.ice);
+        let night = theme::from_omarchy("background = \"#150f0f\"\nforeground = \"#ffffff\"\naccent = \"#65a4d9\"\nmagenta = \"#d879bb\"\ngreen = \"#47ac3a\"\n").unwrap();
+        theme::set(night);
+        let mapped = draw(&state, 40, 6).backend().buffer().cell((3, 1)).unwrap().fg;
+        theme::set(theme::NEON_PALETTE);
+        assert_eq!(mapped, night.ice);
+        assert_ne!(mapped, neon);
+    }
+
+    #[test]
+    fn plain_text_is_unchanged_and_an_oversized_file_says_so() {
+        let mut state = EditorState::new();
+        state.tabs[0] = Document::with_content("a.txt", "fn main() {}");
+        state.tabs[0].cursor = (0, 12);
+        let t = draw(&state, 40, 8);
+        assert_eq!(t.backend().buffer().cell((3, 1)).unwrap().fg, theme::pal().text, "a .txt file is not highlighted");
+
+        state.tabs[0] = Document::new("big.rs");
+        state.tabs[0].lines = vec![String::new(); crate::syntax::MAX_LINES + 1];
+        let rows = render_rows(draw(&state, 80, 8).backend().buffer());
+        if cfg!(feature = "lang-rust") {
+            assert!(rows[7].contains(crate::syntax::TOO_LARGE), "{:?}", rows[7]);
+            state.status = "saved".into();
+            let rows = render_rows(draw(&state, 80, 8).backend().buffer());
+            assert!(rows[7].contains("saved"), "{:?}", rows[7]);
+            assert!(!rows[7].contains("too large"));
+            state.status.clear();
+            state.tabs[0].lines.truncate(3);
+            let rows = render_rows(draw(&state, 80, 8).backend().buffer());
+            assert!(!rows.iter().any(|r| r.contains("too large")));
+        } else {
+            assert!(!rows.iter().any(|r| r.contains("too large")), "{:?}", rows[7]);
+        }
+    }
+
+    #[cfg(feature = "lang-bash")]
+    #[test]
+    fn bash_past_its_line_guard_stays_plain_and_says_so() {
+        let mut state = EditorState::new();
+        let mut doc = Document::new("big.sh");
+        doc.lines = vec!["echo hi".into(); crate::syntax::BASH_MAX_LINES + 1];
+        doc.cursor = (0, 7);
+        state.tabs[0] = doc;
+        let t = draw(&state, 80, 8);
+        let rows = render_rows(t.backend().buffer());
+        assert!(rows[7].contains(crate::syntax::TOO_LARGE), "{:?}", rows[7]);
+        let echo = t.backend().buffer().cell((gutter(&state.tabs[0]) as u16, 1)).unwrap();
+        assert_eq!(echo.fg, theme::pal().text, "bash past the guard is plain");
+
+        let mut doc = Document::new("ok.sh");
+        doc.lines = vec!["echo hi".into(); crate::syntax::BASH_MAX_LINES];
+        doc.cursor = (0, 7);
+        state.tabs[0] = doc;
+        let t = draw(&state, 80, 8);
+        let rows = render_rows(t.backend().buffer());
+        assert!(!rows.iter().any(|r| r.contains("too large")), "{:?}", rows[7]);
+        let echo = t.backend().buffer().cell((gutter(&state.tabs[0]) as u16, 1)).unwrap();
+        assert_eq!(echo.fg, theme::pal().neon, "bash at the guard is still coloured");
+    }
+
     #[test]
     fn paging_keeps_the_caret_on_its_screen_row_and_never_scrolls_past_the_end() {
         let text: Vec<String> = (0..40).map(|n| format!("row{}", n)).collect();
@@ -1094,6 +1247,7 @@ mod tests {
         let (after, rows) = caret_row(&state);
         assert_eq!(state.tabs[0].cursor.0, 3 + height);
         assert_eq!(after, before, "the caret keeps its row on screen: {:?}", rows);
+        assert_eq!(areas(area, &state).top, height, "effects know the view's top line");
         for _ in 0..5 {
             state.apply(crate::keys::Action::PageDown);
         }

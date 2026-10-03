@@ -73,6 +73,7 @@ pub struct Snapshot {
     extra_carets: Vec<(usize, usize)>,
     selection: Option<((usize, usize), (usize, usize))>,
     occurrences: Vec<(usize, usize, usize)>,
+    docx_anchors: Option<Vec<crate::docx::Anchor>>,
 }
 
 pub struct Document {
@@ -94,6 +95,9 @@ pub struct Document {
     redo: Vec<Snapshot>,
     rev: u64,
     markdown: RefCell<Option<(u64, crate::theme::Palette, Rc<MdView>)>>,
+    syntax: RefCell<Option<(u64, crate::syntax::Lang, crate::syntax::Highlighter)>>,
+    syntax_over: Cell<bool>,
+    docx: Option<crate::docx::Session>,
 }
 
 impl Document {
@@ -117,6 +121,9 @@ impl Document {
             redo: Vec::new(),
             rev: 0,
             markdown: RefCell::new(None),
+            syntax: RefCell::new(None),
+            syntax_over: Cell::new(false),
+            docx: None,
         }
     }
 
@@ -141,10 +148,22 @@ impl Document {
             redo: Vec::new(),
             rev: 0,
             markdown: RefCell::new(None),
+            syntax: RefCell::new(None),
+            syntax_over: Cell::new(false),
+            docx: None,
         }
     }
 
     pub fn from_file(path: &str) -> std::io::Result<Self> {
+        if crate::docx::is_path(path) {
+            let bytes = std::fs::read(path)?;
+            let (lines, session) = crate::docx::load(&bytes)?;
+            let mut doc = Self::with_content(&file_name(path), "");
+            doc.lines = if lines.is_empty() { vec![String::new()] } else { lines };
+            doc.docx = Some(session);
+            doc.path = Some(path.to_string());
+            return Ok(doc);
+        }
         let content = std::fs::read_to_string(path)?;
         let mut doc = Self::with_content(&file_name(path), &content);
         doc.path = Some(path.to_string());
@@ -154,7 +173,15 @@ impl Document {
     pub fn open_or_new(path: &str) -> std::io::Result<(Self, bool)> {
         match Self::from_file(path) {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                let mut doc = Self::new(&file_name(path));
+                let mut doc = if crate::docx::is_path(path) {
+                    let (lines, session) = crate::docx::blank();
+                    let mut doc = Self::with_content(&file_name(path), "");
+                    doc.lines = lines;
+                    doc.docx = Some(session);
+                    doc
+                } else {
+                    Self::new(&file_name(path))
+                };
                 doc.path = Some(path.to_string());
                 Ok((doc, true))
             }
@@ -173,10 +200,15 @@ impl Document {
             extra_carets: self.extra_carets.clone(),
             selection: self.selection,
             occurrences: self.occurrences.clone(),
+            docx_anchors: self.docx.as_ref().map(|s| s.anchors()),
         }
     }
 
     fn snapshot(&mut self) {
+        if let Some(session) = &mut self.docx {
+            session.note_edit(self.rev, self.dirty);
+            session.realign(&self.lines);
+        }
         self.rev += 1;
         self.dirty = true;
         self.undo.push(self.capture());
@@ -186,29 +218,38 @@ impl Document {
         self.redo.clear();
     }
 
+    fn restore_snap(&mut self, snap: Snapshot) {
+        self.lines = snap.lines;
+        self.cursor = snap.cursor;
+        self.extra_carets = snap.extra_carets;
+        self.selection = snap.selection;
+        self.occurrences = snap.occurrences;
+        if let Some(anchors) = snap.docx_anchors {
+            if let Some(session) = &mut self.docx {
+                session.restore(anchors, &self.lines);
+            }
+        }
+        self.dirty = true;
+        self.rev += 1;
+    }
+
     pub fn undo(&mut self) {
+        if let Some(session) = &mut self.docx {
+            session.realign(&self.lines);
+        }
         if let Some(snap) = self.undo.pop() {
             self.redo.push(self.capture());
-            self.lines = snap.lines;
-            self.cursor = snap.cursor;
-            self.extra_carets = snap.extra_carets;
-            self.selection = snap.selection;
-            self.occurrences = snap.occurrences;
-            self.dirty = true;
-            self.rev += 1;
+            self.restore_snap(snap);
         }
     }
 
     pub fn redo(&mut self) {
+        if let Some(session) = &mut self.docx {
+            session.realign(&self.lines);
+        }
         if let Some(snap) = self.redo.pop() {
             self.undo.push(self.capture());
-            self.lines = snap.lines;
-            self.cursor = snap.cursor;
-            self.extra_carets = snap.extra_carets;
-            self.selection = snap.selection;
-            self.occurrences = snap.occurrences;
-            self.dirty = true;
-            self.rev += 1;
+            self.restore_snap(snap);
         }
     }
 
@@ -1212,8 +1253,12 @@ impl Document {
         name.ends_with(".md") || name.ends_with(".markdown")
     }
 
+    pub fn is_docx(&self) -> bool {
+        crate::docx::is_path(self.path.as_deref().unwrap_or(&self.name))
+    }
+
     pub fn markdown_view(&self) -> Option<Rc<MdView>> {
-        if !self.is_markdown() {
+        if !self.is_markdown() && !self.is_docx() {
             return None;
         }
         let mut cache = self.markdown.borrow_mut();
@@ -1223,10 +1268,49 @@ impl Document {
                 Some(view.clone())
             }
             _ => {
-                let view = Rc::new(markdown::build(&self.lines));
+                let view = Rc::new(if self.is_docx() { crate::docx::render(&self.lines) } else { markdown::build(&self.lines) });
                 *cache = Some((self.rev, palette, view.clone()));
                 Some(view)
             }
+        }
+    }
+
+    pub fn syntax_limited(&self) -> bool {
+        self.syntax_over.get()
+    }
+
+    pub fn syntax_roles(&self, rows: std::ops::Range<usize>) -> Vec<Vec<(std::ops::Range<usize>, crate::syntax::Role)>> {
+        let n = rows.end.saturating_sub(rows.start);
+        let empty = vec![Vec::new(); n];
+        if self.is_markdown() || self.is_docx() {
+            self.syntax_over.set(false);
+            return empty;
+        }
+        let first = self.lines.first().map(String::as_str).unwrap_or("");
+        let name = self.path.as_deref().unwrap_or(&self.name);
+        let Some(lang) = crate::syntax::Lang::for_file(name, first) else {
+            self.syntax_over.set(false);
+            return empty;
+        };
+        if crate::syntax::refuses(lang, &self.lines) {
+            self.syntax_over.set(true);
+            *self.syntax.borrow_mut() = None;
+            return empty;
+        }
+        self.syntax_over.set(false);
+        let mut slot = self.syntax.borrow_mut();
+        let same_lang = slot.as_ref().is_some_and(|(_, cached, _)| *cached == lang);
+        if !same_lang {
+            *slot = crate::syntax::Highlighter::new(lang, &self.lines).map(|hl| (self.rev, lang, hl));
+        } else if slot.as_ref().is_some_and(|(rev, _, _)| *rev != self.rev) {
+            if let Some((rev, _, hl)) = slot.as_mut() {
+                hl.update(&self.lines);
+                *rev = self.rev;
+            }
+        }
+        match slot.as_ref() {
+            Some((_, _, hl)) => hl.roles(rows),
+            None => empty,
         }
     }
 
@@ -1237,7 +1321,7 @@ impl Document {
             || self.selection.is_some_and(|((sl, _), (el, _))| sl <= line && line <= el)
     }
 
-    fn caret_line_indexes(&self) -> Vec<usize> {
+    pub fn caret_line_indexes(&self) -> Vec<usize> {
         let mut lines: Vec<usize> = self.extra_carets.iter().map(|&(l, _)| l).collect();
         lines.push(self.cursor.0);
         lines.sort();
@@ -1514,6 +1598,108 @@ impl Document {
 
     pub fn full_content(&self) -> String {
         self.lines.join("\n")
+    }
+
+    /// Balance a docx line after an edit. A keystroke on a table, picture, or other frozen
+    /// block is rolled back, so the file stays clean.
+    pub fn settle_docx(&mut self) -> Option<String> {
+        if self.docx.is_none() {
+            return None;
+        }
+        let before = self.lines.clone();
+        let mut session = self.docx.take().unwrap();
+        let note = session.settle(&mut self.lines);
+        self.docx = Some(session);
+        self.remap_docx_carets(&before);
+        if note.as_deref().is_some_and(|n| n.contains("unchanged")) {
+            if let Some(snap) = self.undo.last() {
+                if snap.lines == self.lines {
+                    let snap = self.undo.pop().unwrap();
+                    if let Some(session) = &mut self.docx {
+                        let (rev, dirty) = session.rollback_point();
+                        self.rev = rev;
+                        self.dirty = dirty;
+                        if let Some(anchors) = snap.docx_anchors {
+                            session.restore(anchors, &self.lines);
+                        }
+                    }
+                    self.cursor = snap.cursor;
+                    self.extra_carets = snap.extra_carets;
+                    self.selection = snap.selection;
+                    self.occurrences = snap.occurrences;
+                }
+            }
+        }
+        note
+    }
+
+    fn remap_docx_carets(&mut self, before: &[String]) {
+        if self.docx.is_none() {
+            return;
+        }
+        let cursor = {
+            let (line, col) = self.cursor;
+            (line, self.mapped_col(before, line, col))
+        };
+        let extra: Vec<(usize, usize)> = self.extra_carets.iter().map(|&(line, col)| (line, self.mapped_col(before, line, col))).collect();
+        let selection = self.selection.map(|(start, end)| {
+            ((start.0, self.mapped_col(before, start.0, start.1)), (end.0, self.mapped_col(before, end.0, end.1)))
+        });
+        let occurrences: Vec<(usize, usize, usize)> = self
+            .occurrences
+            .iter()
+            .map(|&(line, start, end)| (line, self.mapped_col(before, line, start), self.mapped_col(before, line, end)))
+            .collect();
+        self.cursor = cursor;
+        self.extra_carets = extra;
+        self.selection = selection;
+        self.occurrences = occurrences;
+    }
+
+    fn mapped_col(&self, before: &[String], line: usize, col: usize) -> usize {
+        let Some(old) = before.get(line) else {
+            return col;
+        };
+        let Some(new) = self.lines.get(line) else {
+            return col;
+        };
+        if old == new {
+            return col.min(new.chars().count());
+        }
+        crate::docx::column_at_content(new, crate::docx::content_index(old, col)).min(new.chars().count())
+    }
+
+    fn clamp_carets(&mut self) {
+        if self.lines.is_empty() {
+            self.lines.push(String::new());
+        }
+        let last = self.lines.len() - 1;
+        self.cursor.0 = self.cursor.0.min(last);
+        self.cursor.1 = self.cursor.1.min(self.lines[self.cursor.0].chars().count());
+        self.extra_carets.retain(|c| c.0 < self.lines.len());
+        for caret in &mut self.extra_carets {
+            caret.1 = caret.1.min(self.lines[caret.0].chars().count());
+        }
+    }
+
+    /// Write `path`. A `.docx` path saves the package; anything else saves the lines as text.
+    pub fn write_to(&mut self, path: &str) -> std::io::Result<Option<String>> {
+        if !crate::docx::is_path(path) {
+            std::fs::write(path, self.full_content().as_bytes())?;
+            self.docx = None;
+            return Ok(None);
+        }
+        if self.docx.is_none() {
+            let (lines, session) = crate::docx::from_lines(&self.lines)?;
+            self.lines = lines;
+            self.docx = Some(session);
+            self.clamp_carets();
+        }
+        let settled = self.settle_docx();
+        let (bytes, note) = self.docx.as_mut().unwrap().save(&mut self.lines)?;
+        self.clamp_carets();
+        std::fs::write(path, &bytes)?;
+        Ok(note.or(settled))
     }
 }
 
@@ -2030,6 +2216,7 @@ mod tests {
             after: &'static [(usize, usize)],
         }
         let (end, home, down, left): (Move, Move, Move, Move) = (Document::end, Document::home, Document::move_down, Document::move_left);
+        let (word_right, word_left, file_start, file_end): (Move, Move, Move, Move) = (Document::word_right, Document::word_left, Document::beginning_of_file, Document::end_of_file);
         let cases = [
             Case { name: "shift+end at every caret", text: "abc def\n  ghi jkl", carets: &[(0, 3), (1, 5)], before: &[], moves: &[end], selected: &[(0, 3, 7), (1, 5, 9)], after: &[(0, 7), (1, 9)] },
             Case { name: "shift+home goes back past each anchor to the first non-blank", text: "abc def\n  ghi jkl", carets: &[(0, 3), (1, 5)], before: &[], moves: &[end, home], selected: &[(0, 0, 3), (1, 2, 5)], after: &[(0, 0), (1, 2)] },
@@ -2041,6 +2228,10 @@ mod tests {
             Case { name: "shift+left over a line start moves the carets but keeps no selection", text: "ab\ncd\nef", carets: &[(1, 0), (2, 0)], before: &[], moves: &[left], selected: &[], after: &[(0, 2), (1, 2)] },
             Case { name: "shift+down moves the carets but keeps no selection", text: "abcd\nab\nabcd", carets: &[(0, 3), (1, 1)], before: &[], moves: &[down], selected: &[], after: &[(1, 2), (2, 1)] },
             Case { name: "a single caret keeps extending its occurrence", text: "one two", carets: &[(0, 3)], before: &[(0, 0, 3)], moves: &[end], selected: &[(0, 0, 7)], after: &[(0, 7)] },
+            Case { name: "shift+word-right selects each word", text: "abc def\nxyz uvw", carets: &[(0, 0), (1, 0)], before: &[], moves: &[word_right], selected: &[(0, 0, 3), (1, 0, 3)], after: &[(0, 3), (1, 3)] },
+            Case { name: "shift+word-left selects back to the word start", text: "abc def\nxyz uvw", carets: &[(0, 3), (1, 3)], before: &[], moves: &[word_left], selected: &[(0, 0, 3), (1, 0, 3)], after: &[(0, 0), (1, 0)] },
+            Case { name: "shift+file-start selects only a caret already on the first line", text: "abc def\nxyz uvw", carets: &[(0, 4), (1, 3)], before: &[], moves: &[file_start], selected: &[(0, 0, 4)], after: &[(0, 0)] },
+            Case { name: "shift+file-end selects only a caret already on the last line", text: "abc\ndef", carets: &[(1, 1), (0, 2)], before: &[], moves: &[file_end], selected: &[(1, 1, 3)], after: &[(1, 3)] },
         ];
         for case in cases {
             let mut d = doc_with(case.text);
@@ -2063,6 +2254,43 @@ mod tests {
         d.add_caret_down();
         d.move_by(Document::home, true);
         assert_eq!(d.occurrences, vec![(0, 0, 1), (1, 0, 3)], "a selection made before adding a caret keeps its anchor");
+    }
+
+    #[cfg(feature = "lang-rust")]
+    #[test]
+    fn syntax_colours_follow_typing_paste_undo_and_redo() {
+        use crate::syntax::Role;
+        let kw = |d: &Document, line: usize, col: usize| d.syntax_roles(line..line + 1)[0].iter().any(|(r, role)| r.contains(&col) && *role == Role::Keyword);
+        let mut d = Document::with_content("t.rs", "let a = 1;\nlet b = 1;");
+        assert!(kw(&d, 0, 0) && kw(&d, 1, 0));
+        d.extra_carets = vec![(1, 0)];
+        d.insert_char(' ');
+        assert_eq!(d.lines, vec![" let a = 1;".to_string(), " let b = 1;".to_string()]);
+        assert!(kw(&d, 0, 1) && kw(&d, 1, 1), "typing at every caret moves the keyword");
+        assert!(!kw(&d, 0, 0));
+        d.undo();
+        assert!(kw(&d, 0, 0) && kw(&d, 1, 0));
+        d.redo();
+        assert!(kw(&d, 0, 1) && kw(&d, 1, 1));
+        d.undo();
+        d.clear_extra_carets();
+        d.insert_text("fn f() {\n    let s = \"hi\";\n}\n");
+        assert!(kw(&d, 0, 0), "a multi-line paste is highlighted");
+        assert!(d.syntax_roles(1..2)[0].iter().any(|(_, role)| *role == Role::String), "the pasted string is coloured");
+    }
+
+    #[cfg(feature = "lang-bash")]
+    #[test]
+    fn a_shebang_turns_an_untitled_file_into_bash() {
+        use crate::syntax::Role;
+        let mut d = Document::new("untitled");
+        assert!(d.syntax_roles(0..1)[0].is_empty());
+        for c in "#!/bin/bash".chars() {
+            d.insert_char(c);
+        }
+        d.newline();
+        d.insert_text("echo hi");
+        assert!(d.syntax_roles(1..2)[0].iter().any(|(_, role)| *role == Role::Function), "echo is a command once the shebang is there");
     }
 
     #[test]

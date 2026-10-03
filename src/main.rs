@@ -1,5 +1,6 @@
 mod clipboard;
 mod config;
+mod docx;
 mod document;
 mod find;
 mod herdr;
@@ -9,6 +10,7 @@ mod keys;
 mod markdown;
 mod motion;
 mod state;
+mod syntax;
 mod theme;
 mod update;
 mod ui;
@@ -19,7 +21,7 @@ use std::time::{Duration, Instant};
 
 use ratatui::crossterm::event::{
     poll, read, DisableBracketedPaste, KeyboardEnhancementFlags, PopKeyboardEnhancementFlags,
-    PushKeyboardEnhancementFlags, DisableFocusChange, DisableMouseCapture, EnableBracketedPaste, EnableFocusChange, EnableMouseCapture, Event, KeyEventKind, KeyModifiers, MouseButton,
+    PushKeyboardEnhancementFlags, DisableFocusChange, DisableMouseCapture, EnableBracketedPaste, EnableFocusChange, EnableMouseCapture, Event, KeyCode, KeyEventKind, KeyModifiers, MouseButton,
     MouseEventKind,
 };
 use ratatui::crossterm::execute;
@@ -120,6 +122,15 @@ fn main() -> std::io::Result<()> {
     Ok(())
 }
 
+fn interrupts(event: &Event) -> bool {
+    match event {
+        Event::Key(key) => key.kind != KeyEventKind::Release && !matches!(key.code, KeyCode::Modifier(_)),
+        Event::Mouse(mouse) => !matches!(mouse.kind, MouseEventKind::Moved),
+        Event::Paste(_) | Event::Resize(..) => true,
+        _ => false,
+    }
+}
+
 fn screen(terminal: &Terminal<CrosstermBackend<Stdout>>) -> std::io::Result<Rect> {
     let size = terminal.size()?;
     Ok(Rect::new(0, 0, size.width, size.height))
@@ -192,6 +203,9 @@ fn run(terminal: &mut Terminal<CrosstermBackend<Stdout>>, state: &mut EditorStat
         let event = read()?;
         if quitting {
             continue;
+        }
+        if interrupts(&event) {
+            motion.interrupt();
         }
         let keep_running = match event {
             Event::Key(key_event) => {
@@ -291,5 +305,25 @@ fn run(terminal: &mut Terminal<CrosstermBackend<Stdout>>, state: &mut EditorStat
             quitting = true;
             motion.cue(Cue::Quit, &areas);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ratatui::crossterm::event::{KeyEvent, KeyEventState, ModifierKeyCode, MouseEvent};
+
+    #[test]
+    fn only_real_input_cuts_an_animation_short() {
+        let key = |code, kind| Event::Key(KeyEvent { code, modifiers: KeyModifiers::NONE, kind, state: KeyEventState::NONE });
+        let mouse = |kind| Event::Mouse(MouseEvent { kind, column: 0, row: 0, modifiers: KeyModifiers::NONE });
+        assert!(interrupts(&key(KeyCode::Char('x'), KeyEventKind::Press)));
+        assert!(interrupts(&key(KeyCode::Char('x'), KeyEventKind::Repeat)));
+        assert!(!interrupts(&key(KeyCode::Char('M'), KeyEventKind::Release)), "letting go of Alt+Shift+M must not end its own animation");
+        assert!(!interrupts(&key(KeyCode::Modifier(ModifierKeyCode::LeftShift), KeyEventKind::Press)), "a bare modifier");
+        assert!(interrupts(&mouse(MouseEventKind::Down(MouseButton::Left))) && interrupts(&mouse(MouseEventKind::ScrollDown)));
+        assert!(!interrupts(&mouse(MouseEventKind::Moved)));
+        assert!(!interrupts(&Event::FocusLost) && !interrupts(&Event::FocusGained), "herdr taking the focus after a move");
+        assert!(interrupts(&Event::Resize(80, 24)) && interrupts(&Event::Paste("x".into())));
     }
 }
