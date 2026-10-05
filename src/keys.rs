@@ -61,7 +61,6 @@ pub enum Action {
     SendToPane,
     MoveToPane,
     SwitchTheme,
-    ShowHelp,
     StartNewLine,
     WordLeft,
     WordRight,
@@ -139,7 +138,6 @@ impl DoubleShift {
 
 pub const PALETTE: &[(&str, &str, &str)] = &[
     ("find_action", "Command palette", "Alt+Shift+A"),
-    ("show_help", "Keyboard shortcuts", "F1"),
     ("save_all", "Save all", "Ctrl+S"),
     ("open_file", "Open or create a file", "Ctrl+N"),
     ("rename", "Rename file / save as", "Shift+F6"),
@@ -188,14 +186,6 @@ pub const PALETTE: &[(&str, &str, &str)] = &[
     ("move_to_pane", "Move lines to herdr", "Alt+Shift+M"),
     ("switch_theme", "Switch theme", "Alt+`"),
     ("quit", "Quit", "Ctrl+Q"),
-];
-
-pub const HELP: &[(&str, &[&str])] = &[
-    ("files", &["save_all", "open_file"]),
-    ("find", &["find", "replace", "find_in_files", "go_to_line"]),
-    ("edit", &["undo", "redo", "add_caret_down", "select_all_occurrences"]),
-    ("herdr", &["send_to_pane", "move_to_pane"]),
-    ("ee", &["find_action", "switch_theme", "quit"]),
 ];
 
 impl Action {
@@ -249,7 +239,6 @@ impl Action {
             "send_to_pane" => Action::SendToPane,
             "move_to_pane" => Action::MoveToPane,
             "switch_theme" => Action::SwitchTheme,
-            "show_help" => Action::ShowHelp,
             "clear_extra_carets" => Action::ClearExtraCaret,
             "join_lines" => Action::JoinLines,
             "reformat" => Action::Reformat,
@@ -478,7 +467,7 @@ impl Keymap {
             KeyCode::PageUp if !alt => Some(if select { Action::SelectPageUp } else { Action::PageUp }),
             KeyCode::PageDown if !alt => Some(if select { Action::SelectPageDown } else { Action::PageDown }),
             KeyCode::F(4) if ctrl => Some(Action::CloseTab),
-            KeyCode::F(1) if !ctrl && !alt && !shift => Some(Action::ShowHelp),
+            KeyCode::F(1) if !ctrl && !alt && !shift => Some(Action::FindAction),
             KeyCode::F(12) if ctrl => Some(Action::FileStructure),
             KeyCode::F(3) if !ctrl && !alt => {
                 if shift {
@@ -775,6 +764,7 @@ mod tests {
             (event(KeyCode::Up, false, true, true), Action::MoveLineUp),
             (event(KeyCode::Down, false, true, true), Action::MoveLineDown),
             (event(KeyCode::Backspace, true, false, true), Action::LastEditLocation),
+            (event(KeyCode::F(1), false, false, false), Action::FindAction),
             (event(KeyCode::F(12), true, false, false), Action::FileStructure),
             (event(KeyCode::Char('A'), true, false, true), Action::FindAction),
             (event(KeyCode::Char('A'), false, true, true), Action::FindAction),

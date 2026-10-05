@@ -121,7 +121,6 @@ pub struct EditorState {
     pub update: Option<(String, String)>,
     pub reload: Option<ReloadPrompt>,
     pub restart_for_update: bool,
-    pub help: bool,
     pub page_rows: usize,
     pub theme: crate::theme::ThemeFile,
     pub theme_roots: crate::theme::Roots,
@@ -158,7 +157,6 @@ impl EditorState {
             update: None,
             reload: None,
             restart_for_update: false,
-            help: false,
             page_rows: 1,
             theme: crate::theme::ThemeFile::default(),
             theme_roots: crate::theme::Roots::default(),
@@ -213,13 +211,8 @@ impl EditorState {
         if self.update.is_some() {
             return self.apply_update_offer(action, pending);
         }
-        if self.help {
-            self.help = false;
-            return true;
-        }
-        if action == Action::ShowHelp {
-            self.help = true;
-            self.cues.push(Cue::PickerOpened);
+        if action == Action::FindAction {
+            self.open_picker(PickerKind::Actions);
             return true;
         }
         let before = (self.tabs[self.active].id, self.tabs[self.active].rev());
@@ -323,7 +316,6 @@ impl EditorState {
                 },
                 None => self.status = "no edits yet".to_string(),
             },
-            Action::FindAction => self.open_picker(PickerKind::Actions),
             Action::FileStructure => self.open_picker(PickerKind::Structure),
             Action::SwitchTheme => self.open_picker(PickerKind::Themes),
             Action::ClickAt(line, col, clicks) => {
@@ -711,7 +703,6 @@ impl EditorState {
                 self.picker = None;
                 self.end_theme_preview();
             }
-            Action::FindAction => self.open_picker(PickerKind::Actions),
             Action::FileStructure => self.open_picker(PickerKind::Structure),
             Action::OpenFile => self.open_picker(PickerKind::Files),
             Action::SwitchTheme => self.open_picker(PickerKind::Themes),
@@ -1920,22 +1911,12 @@ mod tests {
     }
 
     #[test]
-    fn help_opens_from_any_mode_and_the_next_key_only_closes_it() {
+    fn f1_opens_the_command_palette_from_the_find_bar() {
         let mut state = state_with(&["abc"]);
-        state.apply(Action::ShowHelp);
-        assert!(state.help);
-        assert_eq!(state.take_cues(), vec![Cue::PickerOpened]);
-        state.apply(Action::InsertChar('x'));
-        assert!(!state.help, "any key closes it");
-        assert_eq!(state.tabs[0].lines, vec!["abc"], "and does nothing else");
         state.apply(Action::Find);
-        state.apply(Action::ShowHelp);
-        assert!(state.help && matches!(state.mode, Mode::Find), "F1 works in the find bar too");
-        state.apply(Action::ShowHelp);
-        assert!(!state.help, "F1 again closes it");
-        state.apply(Action::ShowHelp);
-        assert!(state.apply(Action::Quit), "Ctrl+Q with the sheet open only closes it");
-        assert!(!state.help);
+        state.apply(Action::FindAction);
+        assert_eq!(state.picker.as_ref().map(|p| p.kind), Some(PickerKind::Actions));
+        assert_eq!(state.tabs[0].lines, vec!["abc"]);
     }
 
     #[test]

@@ -38,7 +38,6 @@ pub fn render(frame: &mut Frame, state: &EditorState) {
     if matches!(state.mode, Mode::Picker) {
         render_picker(frame, state, area);
     }
-    render_help(frame, state, area);
     if state.reload.is_some() {
         render_reload_modal(frame, state, area);
     } else {
@@ -202,7 +201,7 @@ pub fn areas(area: Rect, state: &EditorState) -> Areas {
         status,
         selection,
         caret_rows,
-        popup: popup_rect(area, state).or_else(|| help_rect(area, state)),
+        popup: popup_rect(area, state),
         top,
         picker_row: picker_row(area, state),
         modal: modal_rect(area, state),
@@ -679,10 +678,9 @@ fn render_status_bar(frame: &mut Frame, state: &EditorState, area: Rect) {
     if sel_len > 0 {
         position = format!("{} selected  {}", sel_len, position);
     }
-    let (button, room) = match help_button_in(area) {
+    let (button, room) = match command_button_in(area) {
         Some(b) => {
-            let cap = if state.help { Style::default().fg(theme::pal().void).bg(theme::pal().hot) } else { crate::hud::keycap() };
-            frame.render_widget(Paragraph::new(Line::from(vec![Span::styled(" F1 ", cap), Span::styled(" help", theme::dim())])), b);
+            frame.render_widget(Paragraph::new(Line::from(vec![Span::styled(" F1 ", crate::hud::keycap()), Span::styled(" command", theme::dim())])), b);
             (b.width + 2, Rect::new(area.x, area.y, area.width - b.width - 2, area.height))
         }
         None => (0, area),
@@ -692,66 +690,13 @@ fn render_status_bar(frame: &mut Frame, state: &EditorState, area: Rect) {
     frame.render_widget(Paragraph::new(Line::from(spans)), left);
 }
 
-fn help_button_in(status: Rect) -> Option<Rect> {
-    let width = 9;
+fn command_button_in(status: Rect) -> Option<Rect> {
+    let width = 12;
     (status.width >= 40 && status.height > 0).then(|| Rect::new(status.x + status.width - width, status.y, width, 1))
 }
 
-pub fn help_button(area: Rect, state: &EditorState) -> Option<Rect> {
-    help_button_in(layout(area, state.mode).3)
-}
-
-fn help_rows() -> Vec<(&'static str, &'static str, &'static str)> {
-    let mut rows = Vec::new();
-    for (group, names) in crate::keys::HELP {
-        for (i, name) in names.iter().enumerate() {
-            if let Some(&(_, label, keys)) = crate::keys::PALETTE.iter().find(|(n, _, _)| n == name) {
-                rows.push((if i == 0 { *group } else { "" }, label, keys));
-            }
-        }
-    }
-    rows
-}
-
-const HELP_HINTS: [(&str, &str); 2] = [("any key", "close"), ("Alt+Shift+A", "every action")];
-
-pub fn help_rect(area: Rect, state: &EditorState) -> Option<Rect> {
-    if !state.help {
-        return None;
-    }
-    let editor = editor_rect_for(area, state.mode);
-    let rows = help_rows();
-    let gutter = crate::keys::HELP.iter().map(|(g, _)| g.chars().count()).max().unwrap_or(0) + 3;
-    let widest = rows.iter().map(|(_, l, k)| gutter + l.chars().count() + k.chars().count() + 6).max().unwrap_or(0);
-    let hints: usize = HELP_HINTS.iter().map(|(k, w)| k.chars().count() + w.chars().count() + 5).sum();
-    let width = ((widest.max(hints) + 4) as u16).min(area.width.saturating_sub(2));
-    let height = (rows.len() as u16 + 5).min(editor.height);
-    (width >= 12 && height >= 3).then(|| Rect::new(area.x + (area.width - width) / 2, editor.y + (editor.height - height) / 2, width, height))
-}
-
-fn render_help(frame: &mut Frame, state: &EditorState, area: Rect) {
-    let Some(rect) = help_rect(area, state) else {
-        return;
-    };
-    let p = theme::pal();
-    let tag = Some(format!("ee {}", env!("CARGO_PKG_VERSION")));
-    let inner = crate::hud::draw(frame.buffer_mut(), rect, &crate::hud::Chrome { title: "keys", tag, hazard: false });
-    let gutter = crate::keys::HELP.iter().map(|(g, _)| g.chars().count()).max().unwrap_or(0) as u16 + 3;
-    let body = inner.height.saturating_sub(3) as usize;
-    for (i, (group, label, keys)) in help_rows().into_iter().take(body).enumerate() {
-        let y = inner.y + 1 + i as u16;
-        let row = Rect::new(inner.x + 1, y, inner.width.saturating_sub(2), 1);
-        if !group.is_empty() {
-            frame.render_widget(Paragraph::new(Span::styled(group, Style::default().fg(p.ice).add_modifier(Modifier::BOLD))), row);
-        }
-        let label_rect = Rect::new(row.x + gutter, y, row.width.saturating_sub(gutter), 1);
-        frame.render_widget(Paragraph::new(Span::styled(label, theme::text())), label_rect);
-        frame.render_widget(Paragraph::new(Span::styled(format!(" {} ", keys), crate::hud::keycap())).alignment(Alignment::Right), row);
-    }
-    if inner.height >= 3 {
-        let row = Rect::new(inner.x + 1, inner.y + inner.height - 1, inner.width.saturating_sub(2), 1);
-        crate::hud::hints(frame.buffer_mut(), row, &HELP_HINTS);
-    }
+pub fn command_button(area: Rect, state: &EditorState) -> Option<Rect> {
+    command_button_in(layout(area, state.mode).3)
 }
 
 fn selection_length(lines: &[String], start: (usize, usize), end: (usize, usize)) -> usize {
@@ -1548,33 +1493,21 @@ xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx";
     }
 
     #[test]
-    fn the_help_button_opens_a_sheet_of_the_basic_shortcuts() {
+    fn the_command_button_opens_the_palette_from_the_bottom_right() {
         let mut state = EditorState::new();
         let area = Rect::new(0, 0, 80, 24);
-        let button = help_button(area, &state).unwrap();
-        assert_eq!(button, Rect::new(71, 23, 9, 1), "bottom right of the status bar");
+        let button = command_button(area, &state).unwrap();
+        assert_eq!(button, Rect::new(68, 23, 12, 1), "bottom right of the status bar");
         let rows = render_rows(draw(&state, 80, 24).backend().buffer());
-        assert_eq!(rows[23].chars().skip(71).collect::<String>(), " F1  help");
+        assert_eq!(rows[23].chars().skip(68).collect::<String>(), " F1  command");
         assert!(rows[23].contains("ln 1, col 1"), "the position still shows: {:?}", rows[23]);
+        assert!(command_button(Rect::new(0, 0, 30, 10), &state).is_none(), "no button when the bar is too narrow");
 
-        state.apply(crate::keys::Action::ShowHelp);
+        state.apply(crate::keys::Action::FindAction);
         let rows = render_rows(draw(&state, 80, 24).backend().buffer());
-        for (group, names) in crate::keys::HELP {
-            for (i, name) in names.iter().enumerate() {
-                let &(_, label, keys) = crate::keys::PALETTE.iter().find(|(n, _, _)| n == name).unwrap();
-                let row = rows.iter().find(|r| r.contains(label)).unwrap_or_else(|| panic!("{} is on the sheet", label));
-                assert!(row.contains(&format!(" {} ", keys)), "{} shows {}: {:?}", label, keys, row);
-                let gutter = &row[..row.find(label).unwrap()];
-                assert_eq!(gutter.contains(group), i == 0, "the {} group is named once, on its first row: {:?}", group, row);
-            }
-        }
-        for (label, keys) in [("Command palette", "Alt+Shift+A"), ("Send lines to herdr", "Alt+Shift+E")] {
-            assert!(rows.iter().any(|r| r.contains(label) && r.contains(keys)), "{} is on the sheet", label);
-        }
-        assert!(rows.iter().any(|r| r.contains(" any key  close") && r.contains(" Alt+Shift+A  every action")), "the hint row");
-        assert!(rows.iter().any(|r| r.contains(&format!(" ee {} ", env!("CARGO_PKG_VERSION")))), "the version on the bottom edge");
-        assert_eq!(areas(area, &state).popup, help_rect(area, &state), "the sheet gets the popup animation");
-        assert!(help_button(Rect::new(0, 0, 30, 10), &state).is_none(), "no button when the bar is too narrow");
+        assert!(rows.iter().any(|r| r.contains("COMMAND PALETTE")), "F1 opens the palette: {:?}", rows);
+        assert!(!rows.iter().any(|r| r.contains("any key") && r.contains("close")), "the shortcut sheet is gone");
+        assert_eq!(areas(area, &state).popup, popup_rect(area, &state));
         for (w, h) in [(0, 0), (12, 3), (30, 6), (40, 8)] {
             draw(&state, w, h);
         }

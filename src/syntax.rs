@@ -140,6 +140,8 @@ mod engine {
         Html,
         #[cfg(feature = "lang-go")]
         Go,
+        #[cfg(feature = "lang-qml")]
+        Qml,
     }
 
     fn ext_lang(ext: &str) -> Option<Lang> {
@@ -170,6 +172,8 @@ mod engine {
             "html" | "htm" | "xhtml" => Some(Lang::Html),
             #[cfg(feature = "lang-go")]
             "go" => Some(Lang::Go),
+            #[cfg(feature = "lang-qml")]
+            "qml" => Some(Lang::Qml),
             _ => None,
         }
     }
@@ -202,6 +206,8 @@ mod engine {
             "html" | "htm" => Some(Lang::Html),
             #[cfg(feature = "lang-go")]
             "go" | "golang" => Some(Lang::Go),
+            #[cfg(feature = "lang-qml")]
+            "qml" => Some(Lang::Qml),
             _ => None,
         }
     }
@@ -285,6 +291,8 @@ mod engine {
                 Lang::Html => tree_sitter_html::LANGUAGE.into(),
                 #[cfg(feature = "lang-go")]
                 Lang::Go => tree_sitter_go::LANGUAGE.into(),
+                #[cfg(feature = "lang-qml")]
+                Lang::Qml => tree_sitter_qmljs::LANGUAGE.into(),
                 #[cfg(not(any(
                     feature = "lang-json",
                     feature = "lang-javascript",
@@ -297,7 +305,8 @@ mod engine {
                     feature = "lang-python",
                     feature = "lang-css",
                     feature = "lang-html",
-                    feature = "lang-go"
+                    feature = "lang-go",
+                    feature = "lang-qml"
                 )))]
                 _ => match self {},
             }
@@ -336,6 +345,9 @@ mod engine {
                 Lang::Html => tree_sitter_html::HIGHLIGHTS_QUERY.to_string(),
                 #[cfg(feature = "lang-go")]
                 Lang::Go => tree_sitter_go::HIGHLIGHTS_QUERY.to_string(),
+                // The TypeScript highlight query names nodes this grammar does not have.
+                #[cfg(feature = "lang-qml")]
+                Lang::Qml => format!("{}\n{}", tree_sitter_javascript::HIGHLIGHT_QUERY, tree_sitter_qmljs::HIGHLIGHTS_QUERY),
                 #[cfg(not(any(
                     feature = "lang-json",
                     feature = "lang-javascript",
@@ -348,7 +360,8 @@ mod engine {
                     feature = "lang-python",
                     feature = "lang-css",
                     feature = "lang-html",
-                    feature = "lang-go"
+                    feature = "lang-go",
+                    feature = "lang-qml"
                 )))]
                 _ => match self {},
             }
@@ -723,6 +736,8 @@ mod tests {
         out.push(Lang::Html);
         #[cfg(feature = "lang-go")]
         out.push(Lang::Go);
+        #[cfg(feature = "lang-qml")]
+        out.push(Lang::Qml);
         out
     }
 
@@ -827,6 +842,8 @@ mod tests {
         ]);
         #[cfg(feature = "lang-go")]
         cases.extend([file("a.go", "", Some(Lang::Go)), file("a.GO", "", Some(Lang::Go)), fence("go", Some(Lang::Go)), fence("golang", Some(Lang::Go))]);
+        #[cfg(feature = "lang-qml")]
+        cases.extend([file("a.qml", "", Some(Lang::Qml)), file("a.QML", "", Some(Lang::Qml)), fence("qml", Some(Lang::Qml)), fence("QML extra", Some(Lang::Qml))]);
         for (name, first, lang, is_fence) in cases {
             let got = if is_fence { Lang::from_fence(name) } else { Lang::for_file(name, first) };
             assert_eq!(got, lang, "{name} {first}");
@@ -982,6 +999,8 @@ mod tests {
         assert_matches_official(Lang::Html, "<!-- note -->\n<p class=\"hi\">hello</p>\n");
         #[cfg(feature = "lang-go")]
         assert_matches_official(Lang::Go, "package main\n\nfunc greet(name string) string {\n    return \"hi\" // note\n}\n");
+        #[cfg(feature = "lang-qml")]
+        assert_matches_official(Lang::Qml, "import QtQuick\n\nItem {\n    property string label: \"a\\nb\" // note\n    function greet(name) {\n        return 1\n    }\n}\n");
     }
 
     #[test]

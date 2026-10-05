@@ -1,6 +1,6 @@
 [package]
 name = "eoe"
-version = "0.8.0"
+version = "0.9.0"
 edition = "2021"
 description = "Eric's Own Editor: a keyboard-first plain-text editor for Omarchy with a cyberpunk look"
 
@@ -24,6 +24,7 @@ tree-sitter-java = { version = "0.23", optional = true }
 tree-sitter-javascript = { version = "0.25", optional = true }
 tree-sitter-json = { version = "0.24", optional = true }
 tree-sitter-python = { version = "0.25", optional = true }
+tree-sitter-qmljs = { version = "0.3", optional = true }
 tree-sitter-rust = { version = "0.24", optional = true }
 tree-sitter-toml-ng = { version = "0.7", optional = true }
 tree-sitter-typescript = { version = "0.23", optional = true }
@@ -33,7 +34,7 @@ tree-sitter-yaml = { version = "0.7", optional = true }
 tree-sitter-highlight = "0.27"
 
 [features]
-default = ["lang-json", "lang-javascript", "lang-typescript", "lang-rust", "lang-bash", "lang-java", "lang-toml", "lang-yaml", "lang-python", "lang-css", "lang-html", "lang-go"]
+default = ["lang-json", "lang-javascript", "lang-typescript", "lang-rust", "lang-bash", "lang-java", "lang-toml", "lang-yaml", "lang-python", "lang-css", "lang-html", "lang-go", "lang-qml"]
 syntax = ["dep:tree-sitter"]
 lang-json = ["syntax", "dep:tree-sitter-json"]
 lang-javascript = ["syntax", "dep:tree-sitter-javascript"]
@@ -47,3 +48,4 @@ lang-python = ["syntax", "dep:tree-sitter-python"]
 lang-css = ["syntax", "dep:tree-sitter-css"]
 lang-html = ["syntax", "dep:tree-sitter-html"]
 lang-go = ["syntax", "dep:tree-sitter-go"]
+lang-qml = ["syntax", "lang-javascript", "dep:tree-sitter-qmljs"]
