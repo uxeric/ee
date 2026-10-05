@@ -11,13 +11,10 @@ The project is `eoe`, the command is `ee`. Type it, jack in, edit text in neon.
 <a href="https://ratatui.rs"><img alt="ratatui 0.30" src="https://img.shields.io/badge/ratatui-0.30-29f0ff?style=for-the-badge&labelColor=0b0620"></a>
 <a href="https://github.com/ratatui/tachyonfx"><img alt="tachyonfx 0.25" src="https://img.shields.io/badge/tachyonfx-0.25-ffb627?style=for-the-badge&labelColor=0b0620"></a>
 <a href="https://omarchy.org"><img alt="made for Omarchy 4" src="https://img.shields.io/badge/made_for-Omarchy_4-d6dcf5?style=for-the-badge&labelColor=0b0620"></a>
-<a href="#send-lines-to-herdr"><img alt="herdr ready" src="https://img.shields.io/badge/herdr-ready-ff2a6d?style=for-the-badge&labelColor=0b0620"></a>
+<img alt="herdr ready" src="https://img.shields.io/badge/herdr-ready-ff2a6d?style=for-the-badge&labelColor=0b0620">
 
 <kbd>[jack in](#jack-in)</kbd>&nbsp;
-<kbd>[what it does](#what-it-does)</kbd>&nbsp;
 <kbd>[keys](#keys)</kbd>&nbsp;
-<kbd>[config](#config)</kbd>&nbsp;
-<kbd>[under the hood](#under-the-hood)</kbd>&nbsp;
 <kbd>[faq](#faq)</kbd>
 
 </div>
@@ -45,7 +42,7 @@ It builds `ee` from source into `~/.local/bin/ee`, no root needed, and offers to
 
 ## Keys
 
-Terminals can't tell `Ctrl+X` from `Ctrl+Shift+X`, so WebStorm's `Ctrl+Shift+letter` actions live on the plain `Ctrl+letter` key. Where that key was taken, the action moved to `Alt+Shift+letter`. Most `Ctrl` keys also answer to `Alt`, which you can turn off in the [config](#config).
+Terminals can't tell `Ctrl+X` from `Ctrl+Shift+X`, so WebStorm's `Ctrl+Shift+letter` actions live on the plain `Ctrl+letter` key. Where that key was taken, the action moved to `Alt+Shift+letter`. Most `Ctrl` keys also answer to `Alt`, which you can turn off in `~/.config/eoe/config.toml`.
 
 ### Cheat sheet
 
