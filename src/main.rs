@@ -123,6 +123,55 @@ fn main() -> std::io::Result<()> {
     Ok(())
 }
 
+fn context_mouse(state: &mut EditorState, area: Rect, kind: MouseEventKind, column: u16, row: u16) -> bool {
+    if state.reload.is_some() || state.update.is_some() {
+        return false;
+    }
+    let open = matches!(state.mode, state::Mode::Menu);
+    let right = matches!(kind, MouseEventKind::Down(MouseButton::Right));
+    if !open && !(right && matches!(state.mode, state::Mode::Normal)) {
+        return false;
+    }
+    if open {
+        match kind {
+            MouseEventKind::Moved => return true,
+            MouseEventKind::Down(MouseButton::Left) => {
+                match ui::menu_hit(area, state, column, row) {
+                    ui::MenuHit::Row(index) => {
+                        state.apply(Action::ChooseMenu(index));
+                    }
+                    ui::MenuHit::Frame => {}
+                    ui::MenuHit::Outside => {
+                        state.apply(Action::CloseMenu);
+                    }
+                }
+                return true;
+            }
+            MouseEventKind::Down(MouseButton::Right) => {
+                if !matches!(ui::menu_hit(area, state, column, row), ui::MenuHit::Outside) {
+                    return true;
+                }
+            }
+            MouseEventKind::ScrollUp
+            | MouseEventKind::ScrollDown
+            | MouseEventKind::ScrollLeft
+            | MouseEventKind::ScrollRight
+            | MouseEventKind::Drag(_) => {
+                state.apply(Action::CloseMenu);
+                return true;
+            }
+            _ => return true,
+        }
+    }
+    let editor = ui::editor_rect_for(area, state.mode);
+    if let Some((line, col)) = ui::mouse_to_doc(editor, column, row, &state.tabs[state.active]) {
+        state.apply(Action::OpenMenu { line, col, x: column, y: row });
+    } else if open {
+        state.apply(Action::CloseMenu);
+    }
+    true
+}
+
 fn interrupts(event: &Event) -> bool {
     match event {
         Event::Key(key) => key.kind != KeyEventKind::Release && !matches!(key.code, KeyCode::Modifier(_)),
@@ -148,6 +197,9 @@ fn run(terminal: &mut Terminal<CrosstermBackend<Stdout>>, state: &mut EditorStat
         state.warn(warning);
     } else if !theme_found {
         state.warn(format!("theme `{}` isn't installed; using neon (Alt+` picks another)", missing_theme));
+    }
+    if let Ok(herdr) = herdr::Herdr::from_env() {
+        herdr.take_right_click();
     }
     let mut double_shift = DoubleShift::default();
     let mut motion = Motion::from_env();
@@ -230,6 +282,7 @@ fn run(terminal: &mut Terminal<CrosstermBackend<Stdout>>, state: &mut EditorStat
                 }
             }
             Event::Mouse(_) | Event::Paste(_) if state.reload.is_some() => true,
+            Event::Mouse(mouse) if context_mouse(state, area, mouse.kind, mouse.column, mouse.row) => true,
             Event::Mouse(mouse)
                 if mouse.kind == MouseEventKind::Down(MouseButton::Left)
                     && ui::command_button(area, state).is_some_and(|b| b.contains(ratatui::layout::Position::new(mouse.column, mouse.row))) =>
@@ -334,5 +387,56 @@ mod tests {
         assert!(!interrupts(&mouse(MouseEventKind::Moved)));
         assert!(!interrupts(&Event::FocusLost) && !interrupts(&Event::FocusGained), "herdr taking the focus after a move");
         assert!(interrupts(&Event::Resize(80, 24)) && interrupts(&Event::Paste("x".into())));
+    }
+
+    #[test]
+    fn right_click_keeps_a_selection_it_lands_in_and_the_menu_copies_pastes_and_leaves_the_line() {
+        use state::Mode;
+        let area = Rect::new(0, 0, 80, 24);
+        let mut state = EditorState::new();
+        state.tabs[0] = document::Document::with_content("t", "hello world\nsecond");
+        state.tabs[0].selection = Some(((0, 6), (0, 11)));
+        state.tabs[0].cursor = (0, 11);
+        let editor = ui::editor_rect_for(area, Mode::Normal);
+        let inside = (0..40).find(|&x| ui::mouse_to_doc(editor, x, editor.y, &state.tabs[0]) == Some((0, 6))).unwrap();
+        let right = MouseEventKind::Down(MouseButton::Right);
+        let left = MouseEventKind::Down(MouseButton::Left);
+        assert!(context_mouse(&mut state, area, right, inside, editor.y));
+        assert_eq!(state.tabs[0].selection, Some(((0, 6), (0, 11))), "a right-click inside the selection keeps it");
+        assert!(matches!(state.mode, Mode::Menu));
+        state.apply(Action::InsertChar('Z'));
+        assert_eq!(state.tabs[0].lines[0], "hello world", "typing does nothing while the menu is open");
+        state.apply(Action::Newline);
+        assert!(state.status.starts_with("copied"));
+        assert!(matches!(state.mode, Mode::Normal));
+        assert_eq!(state.tabs[0].lines, vec!["hello world", "second"], "copy leaves the text");
+
+        let on_second = (0..40).find(|&x| ui::mouse_to_doc(editor, x, editor.y + 1, &state.tabs[0]) == Some((1, 0))).unwrap();
+        context_mouse(&mut state, area, right, on_second, editor.y + 1);
+        assert!(state.tabs[0].selection.is_none(), "a right-click outside the selection moves the caret there");
+        assert_eq!(state.tabs[0].cursor.0, 1);
+        let rect = ui::menu_rect(area, &state).unwrap();
+        context_mouse(&mut state, area, left, rect.x, rect.y + 1);
+        assert!(matches!(state.mode, Mode::Menu), "the frame is not a row");
+        context_mouse(&mut state, area, left, rect.x + 2, rect.y + 2);
+        assert_eq!(state.tabs[0].lines[1], "worldsecond");
+        assert!(matches!(state.mode, Mode::Normal));
+
+        context_mouse(&mut state, area, right, on_second, editor.y + 1);
+        for _ in 0..3 {
+            state.apply(Action::Down);
+        }
+        state.apply(Action::Newline);
+        assert!(state.status.contains("herdr"), "{}", state.status);
+        assert_eq!(state.tabs[0].lines[1], "worldsecond", "move does not delete the line when herdr refuses");
+
+        context_mouse(&mut state, area, right, on_second, editor.y + 1);
+        state.apply(Action::ClearExtraCaret);
+        assert!(matches!(state.mode, Mode::Normal), "Esc closes the menu");
+        context_mouse(&mut state, area, right, on_second, editor.y + 1);
+        context_mouse(&mut state, area, MouseEventKind::ScrollDown, on_second, editor.y + 1);
+        assert!(matches!(state.mode, Mode::Normal), "scrolling closes the menu");
+        state.apply(Action::InsertChar('Q'));
+        assert!(state.tabs[0].lines[1].contains('Q'));
     }
 }

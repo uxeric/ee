@@ -161,8 +161,11 @@ In the replace bar, <kbd>Tab</kbd> switches between the Find and Replace fields.
 
 | Action | Key |
 |---|---|
-| Send the caret's line (every caret's line with multi-cursor) to the other herdr pane, without pressing Enter | <kbd>Alt</kbd>+<kbd>Shift</kbd>+<kbd>E</kbd> / <kbd>Ctrl</kbd>+<kbd>Enter</kbd> |
-| Move those lines to the herdr pane: send them, then remove them from the file | <kbd>Alt</kbd>+<kbd>Shift</kbd>+<kbd>M</kbd> / <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>Enter</kbd> |
+| Send the selection, or the caret's line when nothing is selected (every caret's line with multi-cursor), to the other herdr pane, without pressing Enter | <kbd>Alt</kbd>+<kbd>Shift</kbd>+<kbd>E</kbd> / <kbd>Ctrl</kbd>+<kbd>Enter</kbd> |
+| Move that text to the herdr pane: send it, then remove it from the file | <kbd>Alt</kbd>+<kbd>Shift</kbd>+<kbd>M</kbd> / <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>Enter</kbd> |
+| Right-click the text | Copy, Paste, Copy to herdr, Move to herdr |
+
+A right-click inside a selection keeps it, so Copy copies that selection. A right-click anywhere else puts the caret on that line first. Copy and Paste are the clipboard. The herdr rows send the selection when there is one, and the caret's whole lines otherwise, the same as the keys above. Up and down move through the menu, Enter picks, and Esc closes it. Inside herdr, a right-click in the text opens this menu; a right-click on the pane frame still opens herdr's own menu.
 
 <kbd>Ctrl</kbd>+<kbd>Enter</kbd> and <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>Enter</kbd> need a terminal with the kitty keyboard protocol; the <kbd>Alt</kbd>+<kbd>Shift</kbd> keys work everywhere.
 
@@ -183,10 +186,6 @@ These code-editor keys are bound and show "not applicable":
 <img src="assets/readme/divider.svg" width="100%" alt="">
 
 ## FAQ
-
-> [!IMPORTANT]
-> **Do you want to add shortcut keys that I like?**<br>
-> Probably not.
 
 > [!NOTE]
 > **Will you include a plugin system?**<br>

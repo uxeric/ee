@@ -279,6 +279,16 @@ impl Document {
         self.selection.is_some() || !self.occurrences.is_empty()
     }
 
+    pub fn covers(&self, line: usize, col: usize) -> bool {
+        if self.occurrences.iter().any(|&(l, s, e)| l == line && s <= col && col < e) {
+            return true;
+        }
+        let Some(((sl, sc), (el, ec))) = self.selection else {
+            return false;
+        };
+        line >= sl && line <= el && !(line == sl && col < sc) && !(line == el && col >= ec)
+    }
+
     fn delete_selection(&mut self) {
         if !self.occurrences.is_empty() {
             let spans: Vec<(usize, (usize, usize))> =

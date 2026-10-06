@@ -20,6 +20,28 @@ pub enum Mode {
     Replace,
     Prompt(PromptKind),
     Picker,
+    Menu,
+}
+
+#[derive(Clone, Copy)]
+pub enum MenuOp {
+    Copy,
+    Paste,
+    Send,
+    Move,
+}
+
+pub const MENU: &[(&str, &str, MenuOp)] = &[
+    ("Copy", "Ctrl+C", MenuOp::Copy),
+    ("Paste", "Ctrl+V", MenuOp::Paste),
+    ("Copy to herdr", "Alt+Shift+E", MenuOp::Send),
+    ("Move to herdr", "Alt+Shift+M", MenuOp::Move),
+];
+
+pub struct Menu {
+    pub x: u16,
+    pub y: u16,
+    pub selected: usize,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -120,6 +142,7 @@ pub struct EditorState {
     drag_anchor: Option<(usize, usize)>,
     pub update: Option<(String, String)>,
     pub reload: Option<ReloadPrompt>,
+    pub menu: Option<Menu>,
     pub restart_for_update: bool,
     pub page_rows: usize,
     pub theme: crate::theme::ThemeFile,
@@ -156,6 +179,7 @@ impl EditorState {
             drag_anchor: None,
             update: None,
             reload: None,
+            menu: None,
             restart_for_update: false,
             page_rows: 1,
             theme: crate::theme::ThemeFile::default(),
@@ -177,6 +201,7 @@ impl EditorState {
             Mode::Find => "Find",
             Mode::Replace => "Replace",
             Mode::Prompt(_) => "Prompt",
+            Mode::Menu => "Menu",
             Mode::Picker => match self.picker.as_ref().map(|p| p.kind) {
                 Some(PickerKind::Actions) => "Actions",
                 Some(PickerKind::Structure) => "Outline",
@@ -215,11 +240,24 @@ impl EditorState {
             self.open_picker(PickerKind::Actions);
             return true;
         }
+        if let Action::OpenMenu { line, col, x, y } = action {
+            self.open_menu(line, col, x, y);
+            return true;
+        }
+        if let Action::ChooseMenu(index) = action {
+            self.choose_menu(index);
+            return true;
+        }
+        if action == Action::CloseMenu {
+            self.close_menu();
+            return true;
+        }
         let before = (self.tabs[self.active].id, self.tabs[self.active].rev());
         let keep = match self.mode {
             Mode::Prompt(kind) => self.apply_prompt(kind, action, pending),
             Mode::Find | Mode::Replace => self.apply_find(action, pending),
             Mode::Picker => self.apply_picker(action, pending),
+            Mode::Menu => self.apply_menu(action, pending),
             Mode::Normal => self.apply_normal(action, pending),
         };
         if let Some(doc) = self.tabs.get_mut(self.active) {
@@ -242,6 +280,87 @@ impl EditorState {
         let after = crate::ui::cursor_visual_row(&self.tabs[self.active]);
         let top = self.tabs[self.active].scroll_top.get().saturating_add_signed(after as isize - before as isize);
         self.tabs[self.active].scroll_top.set(top);
+    }
+
+    fn open_menu(&mut self, line: usize, col: usize, x: u16, y: u16) {
+        if self.reload.is_some() || self.update.is_some() || !matches!(self.mode, Mode::Normal | Mode::Menu) {
+            return;
+        }
+        if !self.tabs[self.active].covers(line, col) {
+            let doc = self.active_doc();
+            doc.click_at(line, col, 1);
+            self.drag_anchor = Some(doc.cursor);
+        }
+        self.menu = Some(Menu { x, y, selected: 0 });
+        self.mode = Mode::Menu;
+    }
+
+    fn close_menu(&mut self) {
+        self.menu = None;
+        if matches!(self.mode, Mode::Menu) {
+            self.mode = Mode::Normal;
+        }
+    }
+
+    fn choose_menu(&mut self, index: usize) {
+        if !matches!(self.mode, Mode::Menu) {
+            return;
+        }
+        let Some(op) = MENU.get(index).map(|item| item.2) else {
+            return;
+        };
+        self.close_menu();
+        match op {
+            MenuOp::Copy => self.copy(),
+            MenuOp::Paste => self.paste(),
+            MenuOp::Send => self.send_to_pane(false),
+            MenuOp::Move => self.send_to_pane(true),
+        }
+    }
+
+    fn apply_menu(&mut self, action: Action, pending: Option<Pending>) -> bool {
+        let n = MENU.len();
+        match action {
+            Action::Quit => return self.quit(pending == Some(Pending::Quit)),
+            Action::Up => {
+                if let Some(menu) = self.menu.as_mut() {
+                    menu.selected = (menu.selected + n - 1) % n;
+                }
+            }
+            Action::Down => {
+                if let Some(menu) = self.menu.as_mut() {
+                    menu.selected = (menu.selected + 1) % n;
+                }
+            }
+            Action::Newline => {
+                let index = self.menu.as_ref().map(|menu| menu.selected).unwrap_or(0);
+                self.choose_menu(index);
+            }
+            Action::ClearExtraCaret => self.close_menu(),
+            Action::Copy => {
+                self.close_menu();
+                self.copy();
+            }
+            Action::Paste => {
+                self.close_menu();
+                self.paste();
+            }
+            Action::Cut => {
+                self.close_menu();
+                self.copy();
+                self.active_doc().cut();
+            }
+            Action::SendToPane => {
+                self.close_menu();
+                self.send_to_pane(false);
+            }
+            Action::MoveToPane => {
+                self.close_menu();
+                self.send_to_pane(true);
+            }
+            _ => {}
+        }
+        true
     }
 
     fn apply_normal(&mut self, action: Action, pending: Option<Pending>) -> bool {
@@ -478,6 +597,7 @@ impl EditorState {
             };
             let deleted = kind == crate::document::DiskKind::Deleted;
             let dirty = self.tabs[i].dirty;
+            self.close_menu();
             self.reload = Some(ReloadPrompt {
                 id: self.tabs[i].id,
                 choice: if dirty || deleted { 1 } else { 0 },
@@ -657,6 +777,7 @@ impl EditorState {
                     .collect()
             }
         };
+        self.menu = None;
         let mut picker = Picker { kind, input: String::new(), items, shown: Vec::new(), selected: 0 };
         picker.refilter();
         if let Some(current) = picker.shown.iter().position(|(i, _)| matches!(&picker.items[*i].target, PickTarget::Theme(c) if *c == self.theme_choice)) {
@@ -911,17 +1032,31 @@ impl EditorState {
     }
 
     fn send_to_pane(&mut self, remove: bool) {
-        let lines = self.tabs[self.active].caret_lines();
-        match Herdr::from_env().and_then(|h| h.send(&lines.join("\n")).map(|sent| (h, sent))) {
+        let (text, whole_lines) = text_for_herdr(&self.tabs[self.active]);
+        let line_count = self.tabs[self.active].caret_line_indexes().len();
+        match Herdr::from_env().and_then(|h| h.send(&text).map(|sent| (h, sent))) {
             Ok((herdr, sent)) if remove => {
-                let leaving = departure(&self.tabs[self.active], Toward::from_side(herdr.side_of(&sent.pane_id)));
-                self.active_doc().remove_caret_lines();
+                let toward = Toward::from_side(herdr.side_of(&sent.pane_id));
+                let leaving = if whole_lines { Some(departure(&self.tabs[self.active], toward)) } else { None };
+                drop_sent(self.active_doc(), whole_lines);
                 let followed = crate::hyprland::Hyprland::detect().is_some_and(|desktop| herdr.bring_forward(&sent.pane_id, &desktop));
-                self.status = format!("moved {} line(s) to {}{}", lines.len(), sent.name, if followed { " and switched to it" } else { "" });
-                self.cues.push(Cue::Moved(leaving));
+                let switched = if followed { " and switched to it" } else { "" };
+                self.status = if whole_lines {
+                    format!("moved {} line(s) to {}{}", line_count, sent.name, switched)
+                } else {
+                    format!("moved the selection to {}{}", sent.name, switched)
+                };
+                self.cues.push(match leaving {
+                    Some(departure) => Cue::Moved(departure),
+                    None => Cue::Sent,
+                });
             }
             Ok((_, sent)) => {
-                self.status = format!("sent {} line(s) to {}", lines.len(), sent.name);
+                self.status = if whole_lines {
+                    format!("sent {} line(s) to {}", line_count, sent.name)
+                } else {
+                    format!("sent the selection to {}", sent.name)
+                };
                 self.cues.push(Cue::Sent);
             }
             Err(e) => self.fail(e),
@@ -1345,6 +1480,22 @@ pub fn plain(e: &std::io::Error) -> String {
     }
 }
 
+fn text_for_herdr(doc: &Document) -> (String, bool) {
+    if doc.has_selection() {
+        (doc.copy_text().0, false)
+    } else {
+        (doc.caret_lines().join("\n"), true)
+    }
+}
+
+fn drop_sent(doc: &mut Document, whole_lines: bool) {
+    if whole_lines {
+        doc.remove_caret_lines();
+    } else {
+        doc.cut();
+    }
+}
+
 fn same_file(a: &str, b: &str) -> bool {
     match (fs::canonicalize(a), fs::canonicalize(b)) {
         (Ok(a), Ok(b)) => a == b,
@@ -1660,12 +1811,58 @@ mod tests {
     fn send_or_move_outside_herdr_reports_an_error_and_keeps_the_lines() {
         for action in [Action::SendToPane, Action::MoveToPane] {
             let mut state = state_with(&["ls\npwd"]);
-            state.apply(action);
+            state.apply(action.clone());
             assert_eq!(state.status, "herdr is disabled in tests");
             assert!(state.alert == Some(Alert::Error));
             assert_eq!(state.take_cues(), vec![Cue::Error]);
             assert_eq!((state.tabs[0].lines.clone(), state.tabs[0].dirty), (vec!["ls".to_string(), "pwd".to_string()], false));
+
+            let mut state = state_with(&["hello world"]);
+            state.tabs[0].selection = Some(((0, 6), (0, 11)));
+            state.tabs[0].cursor = (0, 11);
+            state.apply(action.clone());
+            assert_eq!(state.status, "herdr is disabled in tests");
+            assert_eq!(state.tabs[0].lines, vec!["hello world".to_string()]);
+            assert_eq!(state.tabs[0].selection, Some(((0, 6), (0, 11))));
+            assert!(!state.tabs[0].dirty);
         }
+    }
+
+    #[test]
+    fn a_selection_is_what_herdr_sends_and_caret_lines_are_the_fallback() {
+        let mut doc = Document::with_content("t", "hello world");
+        doc.selection = Some(((0, 6), (0, 11)));
+        assert_eq!(text_for_herdr(&doc), ("world".to_string(), false));
+
+        doc.selection = Some(((0, 0), (0, 3)));
+        doc.extra_carets = vec![(0, 6)];
+        assert_eq!(text_for_herdr(&doc), ("hel".to_string(), false), "a selection wins over the other carets");
+
+        let mut doc = Document::with_content("t", "alpha\nbeta\ngamma");
+        doc.selection = Some(((0, 2), (2, 2)));
+        assert_eq!(text_for_herdr(&doc), ("pha\nbeta\nga".to_string(), false));
+
+        let mut doc = Document::with_content("t", "one two\none");
+        doc.occurrences = vec![(0, 0, 3), (1, 0, 3)];
+        assert_eq!(text_for_herdr(&doc), ("one\none".to_string(), false));
+
+        let mut doc = Document::with_content("t", "hello world\nnext");
+        doc.extra_carets = vec![(1, 0)];
+        assert_eq!(text_for_herdr(&doc), ("hello world\nnext".to_string(), true));
+    }
+
+    #[test]
+    fn a_herdr_move_of_a_selection_removes_only_the_selection() {
+        let mut doc = Document::with_content("t", "hello world");
+        doc.selection = Some(((0, 6), (0, 11)));
+        doc.cursor = (0, 11);
+        drop_sent(&mut doc, false);
+        assert_eq!(doc.lines, vec!["hello ".to_string()]);
+        assert_eq!((doc.selection, doc.cursor), (None, (0, 6)));
+        assert!(doc.dirty);
+        doc.undo();
+        assert_eq!(doc.lines, vec!["hello world".to_string()]);
+        assert_eq!(doc.selection, Some(((0, 6), (0, 11))));
     }
 
     #[test]

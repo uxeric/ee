@@ -113,6 +113,13 @@ impl Herdr {
         })
     }
 
+    pub fn take_right_click(&self) -> bool {
+        let Some(pane) = &self.pane else {
+            return false;
+        };
+        self.call("pane.input.set", json!({ "pane_id": pane, "right_click": "pane" })).is_ok()
+    }
+
     pub fn bring_forward(&self, pane_id: &str, desktop: &dyn Desktop) -> bool {
         if self.call("pane.focus", json!({ "pane_id": pane_id })).is_err() {
             return false;
@@ -294,6 +301,18 @@ mod tests {
         herdr.pane = None;
         assert_eq!(herdr.side_of("w1:p3"), None, "outside herdr there is no side");
         assert!(methods(&seen).is_empty());
+    }
+
+    #[test]
+    fn inside_herdr_right_clicks_go_to_the_editor() {
+        let (herdr, seen) = fake_herdr(vec![pane("w1:p1", "t1", None)], None);
+        assert!(herdr.take_right_click());
+        assert_eq!(methods(&seen), ["pane.input.set"]);
+        assert_eq!(seen.lock().unwrap()[0]["params"], json!({ "pane_id": "w1:p1", "right_click": "pane" }));
+        let (mut herdr, seen) = fake_herdr(vec![pane("w1:p1", "t1", None)], None);
+        herdr.pane = None;
+        assert!(!herdr.take_right_click());
+        assert!(methods(&seen).is_empty(), "outside herdr the terminal already delivers the click");
     }
 
     #[test]

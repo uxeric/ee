@@ -1,4 +1,4 @@
-use ratatui::layout::{Alignment, Constraint, Layout, Rect};
+use ratatui::layout::{Alignment, Constraint, Layout, Position, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
@@ -6,7 +6,7 @@ use ratatui::Frame;
 
 use crate::document::Document;
 use crate::motion::Areas;
-use crate::state::{Alert, EditorState, Mode, PickerKind, PromptKind};
+use crate::state::{Alert, EditorState, Mode, PickerKind, PromptKind, MENU};
 use crate::theme;
 
 pub fn render(frame: &mut Frame, state: &EditorState) {
@@ -26,7 +26,7 @@ pub fn render(frame: &mut Frame, state: &EditorState) {
         .collect();
 
     render_tab_bar(frame, state, tab_bar);
-    render_editor(frame, doc, &highlights, matches!(state.mode, Mode::Normal), editor_area);
+    render_editor(frame, doc, &highlights, matches!(state.mode, Mode::Normal | Mode::Menu), editor_area);
     if let Some(fb) = find_bar {
         match state.mode {
             Mode::Find | Mode::Replace => render_find_bar(frame, state, &hits, fb),
@@ -42,6 +42,9 @@ pub fn render(frame: &mut Frame, state: &EditorState) {
         render_reload_modal(frame, state, area);
     } else {
         render_update_modal(frame, state, area);
+    }
+    if state.reload.is_none() && state.update.is_none() {
+        render_menu(frame, state, area);
     }
 }
 
@@ -325,7 +328,7 @@ fn render_editor(
         for (col, c) in chars.iter().enumerate().skip(start).take(width) {
             let style = match caret_cols.iter().find(|(cc, _)| *cc == col) {
                 Some((_, active)) => caret_style(*active),
-                None if in_selection(doc, line_idx, col) => theme::selection(),
+                None if doc.covers(line_idx, col) => theme::selection(),
                 None if highlights.iter().any(|&(l, s, e)| l == line_idx && s <= col && col < e) => theme::find_match(),
                 None => line_roles.iter().find(|(range, _)| range.contains(&col)).map(|(_, role)| theme::syntax(*role)).unwrap_or_else(theme::text),
             };
@@ -442,34 +445,84 @@ pub fn scroll_sideways(area: Rect, state: &EditorState, _cols: isize) {
     visible_origin(doc, editor);
 }
 
-fn in_selection(doc: &Document, line_idx: usize, col: usize) -> bool {
-    if doc
-        .occurrences
+pub enum MenuHit {
+    Row(usize),
+    Frame,
+    Outside,
+}
+
+pub fn menu_rect(area: Rect, state: &EditorState) -> Option<Rect> {
+    let menu = state.menu.as_ref()?;
+    let inner = MENU
         .iter()
-        .any(|&(l, s, e)| l == line_idx && s <= col && col < e)
-    {
-        return true;
+        .map(|(label, key, _)| 3 + label.chars().count() + 2 + key.chars().count() + 1)
+        .max()
+        .unwrap_or(8) as u16;
+    let width = inner.saturating_add(2).min(area.width);
+    let height = (MENU.len() as u16 + 2).min(area.height);
+    if width < 2 || height < 2 {
+        return None;
     }
-    let Some((start, end)) = doc.selection else {
-        return false;
+    let x = menu.x.min(area.x.saturating_add(area.width.saturating_sub(width)));
+    let room_below = area.bottom().saturating_sub(menu.y.saturating_add(1));
+    let y = if menu.y < area.bottom() && room_below >= height {
+        menu.y + 1
+    } else if menu.y.saturating_sub(area.y) >= height {
+        menu.y - height
+    } else {
+        area.y
     };
-    let (sl, sc) = start;
-    let (el, ec) = end;
-    if line_idx < sl || line_idx > el {
-        return false;
+    let rect = Rect::new(x, y, width, height).intersection(area);
+    (rect.width >= 2 && rect.height >= 2).then_some(rect)
+}
+
+pub fn menu_hit(area: Rect, state: &EditorState, x: u16, y: u16) -> MenuHit {
+    let Some(rect) = menu_rect(area, state) else {
+        return MenuHit::Outside;
+    };
+    if !rect.contains(Position::new(x, y)) {
+        return MenuHit::Outside;
     }
-    if line_idx == sl && col < sc {
-        return false;
+    let top = rect.y + 1;
+    let bottom = rect.bottom().saturating_sub(1);
+    if y >= top && y < bottom && x > rect.x && x + 1 < rect.right() {
+        let index = (y - top) as usize;
+        if index < MENU.len() {
+            return MenuHit::Row(index);
+        }
     }
-    if line_idx == el && col >= ec {
-        return false;
+    MenuHit::Frame
+}
+
+fn render_menu(frame: &mut Frame, state: &EditorState, area: Rect) {
+    let (Some(menu), Some(rect)) = (state.menu.as_ref(), menu_rect(area, state)) else {
+        return;
+    };
+    let inner = crate::hud::draw(frame.buffer_mut(), rect, &crate::hud::Chrome { title: "", tag: None, hazard: false });
+    if inner.height == 0 {
+        return;
     }
-    true
+    let p = theme::pal();
+    for (i, (label, key, _)) in MENU.iter().enumerate().take(inner.height as usize) {
+        let row = Rect::new(inner.x, inner.y + i as u16, inner.width, 1);
+        let on = i == menu.selected;
+        let base = if on { Style::default().bg(p.selection) } else { Style::default() };
+        if on {
+            frame.buffer_mut().set_style(row, base);
+        }
+        let spans = vec![
+            Span::styled(if on { " ▶ " } else { "   " }, base.fg(p.hot).add_modifier(Modifier::BOLD)),
+            Span::styled(*label, if on { base.fg(p.text).add_modifier(Modifier::BOLD) } else { base.fg(p.text) }),
+        ];
+        let used = Line::from(spans.clone()).width() as u16;
+        frame.render_widget(Paragraph::new(Line::from(spans)), row);
+        render_right(frame, row, used, &format!("{} ", key), base.fg(if on { p.ice } else { p.ghost }));
+    }
 }
 
 fn layout(area: Rect, mode: Mode) -> (Rect, Rect, Option<Rect>, Rect) {
     match mode {
-        Mode::Normal | Mode::Picker => {
+        Mode::Normal | Mode::Picker | Mode::Menu => {
             let rects = Layout::vertical([
                 Constraint::Length(1),
                 Constraint::Min(0),
@@ -646,7 +699,7 @@ fn render_status_bar(frame: &mut Frame, state: &EditorState, area: Rect) {
         None => 0,
     };
     let mode_color = match state.mode {
-        Mode::Normal => theme::pal().ice,
+        Mode::Normal | Mode::Menu => theme::pal().ice,
         Mode::Picker => theme::pal().hot,
         Mode::Find => theme::pal().hot,
         Mode::Replace => theme::pal().amber,
@@ -851,15 +904,19 @@ mod tests {
         let mut state = EditorState::new();
         state.tabs[0] = Document::with_content("t.md", "# alpha beta\n## beta\n");
         state.tabs[0].cursor = (1, 2);
-        for mode in [Mode::Normal, Mode::Find, Mode::Replace, Mode::Prompt(PromptKind::GoToLine), Mode::Picker] {
+        for mode in [Mode::Normal, Mode::Find, Mode::Replace, Mode::Prompt(PromptKind::GoToLine), Mode::Picker, Mode::Menu] {
             state.mode = Mode::Normal;
             state.picker = None;
+            state.menu = None;
             state.update = None;
             if matches!(mode, Mode::Picker) {
                 state.apply(crate::keys::Action::FileStructure);
                 state.offer_update("abc1234".into(), "def5678".into());
             } else {
                 state.mode = mode;
+            }
+            if matches!(mode, Mode::Menu) {
+                state.menu = Some(crate::state::Menu { x: 200, y: 200, selected: 0 });
             }
             state.find.query = "beta".to_string();
             for (w, h) in [(10, 0), (0, 10), (1, 1), (4, 2), (5, 3), (20, 3), (20, 4), (80, 24), (120, 40), (200, 50)] {
@@ -873,7 +930,7 @@ mod tests {
     fn editor_fills_every_row_not_used_by_a_bar() {
         let mut state = EditorState::new();
         state.tabs[0] = Document::with_content("t", "x");
-        for (mode, bars) in [(Mode::Normal, 2), (Mode::Find, 3), (Mode::Prompt(PromptKind::GoToLine), 3)] {
+        for (mode, bars) in [(Mode::Normal, 2), (Mode::Find, 3), (Mode::Prompt(PromptKind::GoToLine), 3), (Mode::Menu, 2)] {
             state.mode = mode;
             for h in [10u16, 24, 50] {
                 let editor = editor_rect_for(Rect::new(0, 0, 80, h), mode);
@@ -888,6 +945,33 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn the_menu_lists_copy_paste_and_both_herdr_rows_on_the_clicked_cell() {
+        let area = Rect::new(0, 0, 80, 24);
+        let mut state = EditorState::new();
+        state.tabs[0] = Document::with_content("t", "alpha\nbeta");
+        state.apply(crate::keys::Action::OpenMenu { line: 0, col: 0, x: 4, y: 22 });
+        let mut t = Terminal::new(TestBackend::new(area.width, area.height)).unwrap();
+        t.draw(|f| render(f, &state)).unwrap();
+        let rows = render_rows(t.backend().buffer());
+        let shown: Vec<&String> = rows.iter().filter(|row| row.contains("Copy") || row.contains("Paste") || row.contains("herdr")).collect();
+        assert_eq!(shown.len(), 4, "all four rows stay on screen when the click is on the last line: {:?}", shown);
+        assert!(shown[0].contains("Copy") && shown[0].contains("Ctrl+C"), "{}", shown[0]);
+        assert!(shown[1].contains("Paste") && shown[1].contains("Ctrl+V"), "{}", shown[1]);
+        assert!(shown[2].contains("Copy to herdr") && shown[2].contains("Alt+Shift+E"), "{}", shown[2]);
+        assert!(shown[3].contains("Move to herdr") && shown[3].contains("Alt+Shift+M"), "{}", shown[3]);
+        let rect = menu_rect(area, &state).unwrap();
+        assert!(rect.bottom() <= area.bottom() && rect.y < 22, "the menu opens above a click on the last line");
+        assert!(matches!(menu_hit(area, &state, rect.x + 2, rect.y + 2), MenuHit::Row(1)), "the second inner row is Paste");
+        assert!(matches!(menu_hit(area, &state, rect.x, rect.y + 1), MenuHit::Frame));
+        assert!(matches!(menu_hit(area, &state, 0, 0), MenuHit::Outside));
+        state.apply(crate::keys::Action::Down);
+        t.draw(|f| render(f, &state)).unwrap();
+        let buf = t.backend().buffer().clone();
+        let paste = (rect.y + 2, rect.x + 4);
+        assert_eq!(buf.cell(Position { x: paste.1, y: paste.0 }).unwrap().bg, theme::pal().selection, "down highlights Paste");
     }
 
     #[test]
