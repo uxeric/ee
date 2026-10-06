@@ -26,7 +26,7 @@ The project is `eoe`, the command is `ee`. Type it, jack in, edit text in neon.
 - [ -- ] plugin system not found (by design)
 ```
 
-`ee` is a plain-text editor for the terminal, built for [Omarchy](https://omarchy.org) (or whatever sub-optimal unix-like system you're running) and for people with WebStorm in their fingers. It does multi-cursor editing, renders markdown live while you write it, edits Word documents the same way, sends lines to the agent or shell next to it in [herdr](https://herdr.dev), and animates every move. It takes its colours from your Omarchy theme and follows it when you switch.
+`ee` is a plain-text editor for the terminal, built for [Omarchy](https://omarchy.org) (or whatever sub-optimal unix-like system you're running) and for people with WebStorm in their fingers. It does multi-cursor editing, renders markdown live while you write it, hides Rust type annotations the same way, edits Word documents the same way, sends lines to the agent or shell next to it in [herdr](https://herdr.dev), and animates every move. It takes its colours from your Omarchy theme and follows it when you switch. `.env` files are coloured too, including `.env.local` and names like `app.env`, and <kbd>Ctrl</kbd>+<kbd>/</kbd> comments them with `#`.
 
 <img src="assets/readme/divider.svg" width="100%" alt="">
 
@@ -95,6 +95,7 @@ Terminals can't tell `Ctrl+X` from `Ctrl+Shift+X`, so WebStorm's `Ctrl+Shift+let
 | Toggle line comment, using the file type's comment syntax | <kbd>Ctrl</kbd>+<kbd>/</kbd> | <kbd>Alt</kbd>+<kbd>/</kbd> |
 | Join lines | <kbd>Ctrl</kbd>+<kbd>J</kbd> | <kbd>Alt</kbd>+<kbd>J</kbd> |
 | Reformat (trim trailing whitespace, at most 2 blank lines in a row) | <kbd>Ctrl</kbd>+<kbd>K</kbd> / <kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>L</kbd> | <kbd>Alt</kbd>+<kbd>K</kbd> |
+| Rust beautifier: hide type annotations on a `.rs` file, the way markdown renders off the caret line | <kbd>Alt</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd> | — |
 | Undo | <kbd>Ctrl</kbd>+<kbd>Z</kbd> | <kbd>Alt</kbd>+<kbd>Z</kbd> |
 | Redo | <kbd>Alt</kbd>+<kbd>Shift</kbd>+<kbd>Z</kbd> (<kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>Z</kbd> with the kitty keyboard protocol) | <kbd>Alt</kbd>+<kbd>Y</kbd> |
 

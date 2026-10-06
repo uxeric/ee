@@ -421,6 +421,15 @@ impl EditorState {
                 Some((prefix, suffix)) => self.active_doc().toggle_comment(prefix, suffix),
                 None => self.warn(format!("no comment syntax for {}", self.tabs[self.active].name)),
             },
+            Action::ToggleRustView => {
+                if !self.tabs[self.active].is_rust() {
+                    self.warn("rust beautifier is for .rs files".to_string());
+                } else if self.tabs[self.active].toggle_rust_view() {
+                    self.status = "rust beautifier on".to_string();
+                } else {
+                    self.status = "rust beautifier off".to_string();
+                }
+            }
             Action::LastEditLocation => match self.last_edit {
                 Some((id, (line, col))) => match self.tabs.iter().position(|d| d.id == id) {
                     Some(tab) => {
@@ -2407,5 +2416,28 @@ mod tests {
         assert!(!state.tabs[0].dirty);
         state.apply(Action::SaveAll);
         assert_eq!(fs::read(&path).unwrap(), beta, "saving without typing returns the bytes that were reloaded");
+    }
+
+    #[test]
+    fn the_rust_beautifier_toggles_and_other_files_stay_as_they_are() {
+        let mut state = EditorState::new();
+        state.tabs[0] = Document::with_content("a.rs", "fn main() -> i32 { 1 }");
+        state.apply(Action::ToggleRustView);
+        assert_eq!(state.status, "rust beautifier on");
+        #[cfg(feature = "lang-rust")]
+        {
+            let view = state.tabs[0].rendered_view().unwrap();
+            let text: String = view.lines[0].cells().iter().map(|cell| cell.0).collect();
+            assert_eq!(text, "fn main() { 1 }");
+        }
+        state.apply(Action::ToggleRustView);
+        assert_eq!(state.status, "rust beautifier off");
+        assert!(state.tabs[0].rendered_view().is_none());
+
+        state.tabs[0] = Document::with_content("notes.txt", "fn main() -> i32 { 1 }");
+        state.apply(Action::ToggleRustView);
+        assert_eq!(state.status, "rust beautifier is for .rs files");
+        assert!(state.tabs[0].rendered_view().is_none());
+        assert_eq!(state.tabs[0].lines[0], "fn main() -> i32 { 1 }");
     }
 }

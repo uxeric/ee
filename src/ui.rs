@@ -246,7 +246,7 @@ fn render_editor(
     let map = screen_map(doc, width);
     let source = map.source_range(top, height);
     let syntax = doc.syntax_roles(source.clone());
-    let markdown = doc.markdown_view();
+    let markdown = doc.rendered_view();
     let num_width = doc.lines.len().to_string().len();
     let gutter_w = gutter(doc);
     let mut tinted_rows: Vec<(usize, Color)> = Vec::new();
@@ -376,7 +376,7 @@ fn text_width(doc: &Document, area: Rect) -> usize {
 }
 
 fn screen_map(doc: &Document, width: usize) -> crate::wrap::Map {
-    let view = doc.markdown_view();
+    let view = doc.rendered_view();
     let counts: Vec<usize> = (0..doc.lines.len()).map(|line| row_count(doc, line, width, view.as_deref())).collect();
     crate::wrap::Map::from_counts(&counts)
 }
@@ -578,7 +578,7 @@ fn locate(editor_area: Rect, mx: u16, my: u16, doc: &Document) -> Option<Hit> {
 }
 
 fn display_col(doc: &Document, hit: &Hit) -> Option<(crate::markdown::RenderedLine, usize, usize)> {
-    let view = doc.markdown_view().filter(|_| !doc.is_raw_line(hit.line))?;
+    let view = doc.rendered_view().filter(|_| !doc.is_raw_line(hit.line))?;
     let rendered = view.lines.get(hit.line)?.clone();
     let cells = rendered.cells().len();
     let pad = if rendered.centered && (hit.width == 0 || cells <= hit.width) {
@@ -1595,5 +1595,40 @@ xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx";
         for (w, h) in [(0, 0), (12, 3), (30, 6), (40, 8)] {
             draw(&state, w, h);
         }
+    }
+
+    #[cfg(feature = "lang-rust")]
+    #[test]
+    fn rust_types_hide_off_the_caret_line_and_clicks_land_on_the_source_char() {
+        let source = "fn main() -> u32 {\n    let value: HashMap<&'static str, Vec<(String, u32)>> = HashMap::new();\n    let done = 1;\n}";
+        let mut state = EditorState::new();
+        state.tabs[0] = Document::with_content("a.rs", source);
+        state.apply(crate::keys::Action::ToggleRustView);
+        let area = Rect::new(0, 0, 40, 12);
+        let editor = editor_rect_for(area, Mode::Normal);
+        let term = draw(&state, area.width, area.height);
+        let buf = term.backend().buffer();
+        let rows = render_rows(buf);
+        assert!(rows[editor.y as usize].contains("-> u32"), "the caret line stays raw: {}", rows[editor.y as usize]);
+        let value = rows.iter().position(|row| row.contains("value")).unwrap();
+        let done = rows.iter().position(|row| row.contains("done")).unwrap();
+        assert_eq!(done, value + 1, "hiding the type does not leave a wrapped row: {:?}", rows);
+        assert!(!rows[value].contains("static"), "{}", rows[value]);
+        let row: Vec<char> = rows[value].chars().collect();
+        let start = row.iter().position(|c| *c == 'l').unwrap();
+        assert_eq!(buf.cell((start as u16, value as u16)).unwrap().fg, theme::pal().ice, "let stays a keyword");
+        let doc = &state.tabs[0];
+        let source_chars: Vec<char> = doc.lines[1].chars().collect();
+        for (x, ch) in row.iter().enumerate().skip(start) {
+            if !ch.is_alphanumeric() {
+                continue;
+            }
+            let (line, col) = mouse_to_doc(editor, x as u16, value as u16, doc).unwrap();
+            assert_eq!((line, source_chars[col]), (1, *ch), "x={x}");
+        }
+
+        state.apply(crate::keys::Action::ToggleRustView);
+        let rows = render_rows(draw(&state, area.width, area.height).backend().buffer());
+        assert!(rows.iter().any(|row| row.contains("static")), "turning it off shows the type again: {:?}", rows);
     }
 }

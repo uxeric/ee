@@ -78,6 +78,7 @@ pub enum Action {
     SelectAll,
     ToggleCase,
     ToggleComment,
+    ToggleRustView,
     FindAction,
     FileStructure,
     LastEditLocation,
@@ -177,6 +178,7 @@ pub const PALETTE: &[(&str, &str, &str)] = &[
     ("reformat", "Reformat", "Ctrl+Alt+L"),
     ("toggle_case", "Toggle case", "Ctrl+Shift+U"),
     ("toggle_comment", "Toggle line comment", "Ctrl+/"),
+    ("toggle_rust_view", "Rust beautifier", "Alt+Shift+B"),
     ("indent", "Indent", "Tab"),
     ("unindent", "Unindent", "Shift+Tab"),
     ("start_new_line", "Start new line below", "Shift+Enter"),
@@ -267,6 +269,7 @@ impl Action {
             "select_all" => Action::SelectAll,
             "toggle_case" => Action::ToggleCase,
             "toggle_comment" => Action::ToggleComment,
+            "toggle_rust_view" => Action::ToggleRustView,
             "find_action" => Action::FindAction,
             "file_structure" => Action::FileStructure,
             "last_edit_location" => Action::LastEditLocation,
@@ -384,6 +387,8 @@ impl Keymap {
                     Some(Action::MoveToPane)
                 } else if alt && c == 'W' {
                     Some(Action::ShrinkSelection)
+                } else if alt && c == 'B' {
+                    Some(Action::ToggleRustView)
                 } else if alt {
                     if self.config.fallback_enabled {
                         // Alt+Y is the "Ctrl+Shift+Y" proxy; redo is no longer

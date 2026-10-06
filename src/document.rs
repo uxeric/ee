@@ -110,6 +110,8 @@ pub struct Document {
     redo: Vec<Snapshot>,
     rev: u64,
     markdown: RefCell<Option<(u64, crate::theme::Palette, Rc<MdView>)>>,
+    rust_plain: Cell<bool>,
+    rust_preview: RefCell<Option<(u64, crate::theme::Palette, Rc<MdView>)>>,
     syntax: RefCell<Option<(u64, crate::syntax::Lang, crate::syntax::Highlighter)>>,
     syntax_over: Cell<bool>,
     docx: Option<crate::docx::Session>,
@@ -138,6 +140,8 @@ impl Document {
             redo: Vec::new(),
             rev: 0,
             markdown: RefCell::new(None),
+            rust_plain: Cell::new(false),
+            rust_preview: RefCell::new(None),
             syntax: RefCell::new(None),
             syntax_over: Cell::new(false),
             docx: None,
@@ -167,6 +171,8 @@ impl Document {
             redo: Vec::new(),
             rev: 0,
             markdown: RefCell::new(None),
+            rust_plain: Cell::new(false),
+            rust_preview: RefCell::new(None),
             syntax: RefCell::new(None),
             syntax_over: Cell::new(false),
             docx: None,
@@ -1280,6 +1286,18 @@ impl Document {
         crate::docx::is_path(self.path.as_deref().unwrap_or(&self.name))
     }
 
+    pub fn is_rust(&self) -> bool {
+        let name = self.path.as_deref().unwrap_or(&self.name);
+        let file = std::path::Path::new(name).file_name().and_then(|n| n.to_str()).unwrap_or(name);
+        matches!(file.to_ascii_lowercase().rsplit_once('.'), Some((stem, "rs")) if !stem.is_empty())
+    }
+
+    pub fn toggle_rust_view(&mut self) -> bool {
+        let on = !self.rust_plain.get();
+        self.rust_plain.set(on);
+        on
+    }
+
     pub fn markdown_view(&self) -> Option<Rc<MdView>> {
         if !self.is_markdown() && !self.is_docx() {
             return None;
@@ -1292,6 +1310,29 @@ impl Document {
             }
             _ => {
                 let view = Rc::new(if self.is_docx() { crate::docx::render(&self.lines) } else { markdown::build(&self.lines) });
+                *cache = Some((self.rev, palette, view.clone()));
+                Some(view)
+            }
+        }
+    }
+
+    /// The markdown or Word preview, or the Rust type-stripped view when that
+    /// beautifier is on. The caret line is still drawn from the source.
+    pub fn rendered_view(&self) -> Option<Rc<MdView>> {
+        if self.is_markdown() || self.is_docx() {
+            return self.markdown_view();
+        }
+        if !self.rust_plain.get() || !self.is_rust() || crate::syntax::too_large(&self.lines) {
+            return None;
+        }
+        let mut cache = self.rust_preview.borrow_mut();
+        let palette = crate::theme::pal();
+        match cache.as_ref() {
+            Some((rev, built_with, view)) if *rev == self.rev && *built_with == palette && view.lines.len() == self.lines.len() => {
+                Some(view.clone())
+            }
+            _ => {
+                let view = Rc::new(crate::rust_view::build(&self.lines)?);
                 *cache = Some((self.rev, palette, view.clone()));
                 Some(view)
             }

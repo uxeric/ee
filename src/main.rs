@@ -9,6 +9,7 @@ mod hyprland;
 mod keys;
 mod markdown;
 mod motion;
+mod rust_view;
 mod state;
 mod syntax;
 mod theme;
