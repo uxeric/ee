@@ -1603,7 +1603,6 @@ xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx";
         let source = "fn main() -> u32 {\n    let value: HashMap<&'static str, Vec<(String, u32)>> = HashMap::new();\n    let done = 1;\n}";
         let mut state = EditorState::new();
         state.tabs[0] = Document::with_content("a.rs", source);
-        state.apply(crate::keys::Action::ToggleRustView);
         let area = Rect::new(0, 0, 40, 12);
         let editor = editor_rect_for(area, Mode::Normal);
         let term = draw(&state, area.width, area.height);

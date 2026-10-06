@@ -2422,8 +2422,6 @@ mod tests {
     fn the_rust_beautifier_toggles_and_other_files_stay_as_they_are() {
         let mut state = EditorState::new();
         state.tabs[0] = Document::with_content("a.rs", "fn main() -> i32 { 1 }");
-        state.apply(Action::ToggleRustView);
-        assert_eq!(state.status, "rust beautifier on");
         #[cfg(feature = "lang-rust")]
         {
             let view = state.tabs[0].rendered_view().unwrap();
@@ -2433,6 +2431,14 @@ mod tests {
         state.apply(Action::ToggleRustView);
         assert_eq!(state.status, "rust beautifier off");
         assert!(state.tabs[0].rendered_view().is_none());
+        state.apply(Action::ToggleRustView);
+        assert_eq!(state.status, "rust beautifier on");
+        #[cfg(feature = "lang-rust")]
+        {
+            let view = state.tabs[0].rendered_view().unwrap();
+            let text: String = view.lines[0].cells().iter().map(|cell| cell.0).collect();
+            assert_eq!(text, "fn main() { 1 }");
+        }
 
         state.tabs[0] = Document::with_content("notes.txt", "fn main() -> i32 { 1 }");
         state.apply(Action::ToggleRustView);
