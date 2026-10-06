@@ -1311,6 +1311,16 @@ impl Document {
         }
         let first = self.lines.first().map(String::as_str).unwrap_or("");
         let name = self.path.as_deref().unwrap_or(&self.name);
+        #[cfg(feature = "syntax")]
+        if crate::syntax::dotenv_file(name) {
+            if crate::syntax::too_large(&self.lines) {
+                self.syntax_over.set(true);
+                *self.syntax.borrow_mut() = None;
+                return empty;
+            }
+            self.syntax_over.set(false);
+            return crate::syntax::dotenv_roles(&self.lines, rows);
+        }
         let Some(lang) = crate::syntax::Lang::for_file(name, first) else {
             self.syntax_over.set(false);
             return empty;
@@ -2414,6 +2424,37 @@ mod tests {
         d.newline();
         d.insert_text("echo hi");
         assert!(d.syntax_roles(1..2)[0].iter().any(|(_, role)| *role == Role::Function), "echo is a command once the shebang is there");
+    }
+
+    #[cfg(feature = "syntax")]
+    #[test]
+    fn dotenv_files_colour_keys_values_comments_and_expansions() {
+        use crate::syntax::Role;
+        let text = "# note\nexport PORT=3000\nHOST=\"local # keep\"\nURL=https://x/${HOST}/é\nSECRET='plain $NO'\nhello\nCERT=\"BEGIN\n# still\nEND\"\n";
+        let doc = Document::with_content(".env.local", text);
+        let role = |line: usize, col: usize| {
+            doc.syntax_roles(line..line + 1)[0].iter().find(|(span, _)| span.contains(&col)).map(|(_, role)| *role).unwrap_or(Role::Plain)
+        };
+        let at = |line: usize, needle: char| {
+            let col = doc.lines[line].chars().position(|c| c == needle).unwrap();
+            role(line, col)
+        };
+        assert_eq!(at(0, '#'), Role::Comment);
+        assert_eq!(role(1, 0), Role::Keyword, "export");
+        assert_eq!(role(1, 6), Role::Plain, "the space after export");
+        assert_eq!(at(1, 'P'), Role::Function);
+        assert_eq!(at(1, '='), Role::Punctuation);
+        assert_eq!(at(1, '3'), Role::String);
+        assert_eq!(at(2, '#'), Role::String, "a hash inside quotes stays in the value");
+        assert_eq!(at(3, '$'), Role::Escape);
+        assert_eq!(at(3, '{'), Role::Escape);
+        assert_eq!(at(3, 'é'), Role::String);
+        assert_eq!(at(4, '$'), Role::String, "single quotes do not expand");
+        assert!(doc.syntax_roles(5..6)[0].is_empty(), "a line that is not an assignment stays plain");
+        assert_eq!(doc.syntax_roles(7..8), vec![vec![(0.."# still".chars().count(), Role::String)]], "a continued quote is a string on a later line");
+        assert!(Document::with_content("notes.txt", text).syntax_roles(1..2)[0].is_empty());
+        let app = Document::with_content("dir/app.env", "PORT=1");
+        assert!(app.syntax_roles(0..1)[0].iter().any(|(_, role)| *role == Role::Function));
     }
 
     #[test]

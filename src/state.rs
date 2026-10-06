@@ -1414,7 +1414,10 @@ pub fn fuzzy(query: &str, text: &str) -> Option<(i32, Vec<usize>)> {
 fn comment_syntax(doc: &Document) -> Option<(&'static str, &'static str)> {
     let name = doc.path.as_deref().unwrap_or(&doc.name);
     let file = Path::new(name).file_name().map(|f| f.to_string_lossy().to_lowercase()).unwrap_or_default();
-    if matches!(file.as_str(), "makefile" | "dockerfile" | ".bashrc" | ".zshrc" | ".profile" | ".gitignore" | ".env") {
+    if crate::syntax::dotenv_file(name) {
+        return Some(("#", ""));
+    }
+    if matches!(file.as_str(), "makefile" | "dockerfile" | ".bashrc" | ".zshrc" | ".profile" | ".gitignore") {
         return Some(("#", ""));
     }
     let ext = file.rsplit_once('.').map(|(_, e)| e).unwrap_or("");
@@ -2053,6 +2056,23 @@ mod tests {
         state.apply(Action::Newline);
         assert_eq!(state.tabs[0].name, "x.rs");
         assert!(state.tabs[0].syntax_roles(0..1)[0].iter().any(|(_, role)| *role == Role::Keyword));
+    }
+
+    #[test]
+    fn dotenv_names_take_hash_comments() {
+        for name in [".env", ".env.local", ".ENV.production", "app.env"] {
+            let mut state = EditorState::new();
+            state.tabs[0].name = name.into();
+            state.tabs[0].lines = vec!["PORT=1".into()];
+            state.apply(Action::ToggleComment);
+            assert_eq!(state.tabs[0].lines[0], "# PORT=1", "{name}");
+        }
+        let mut state = EditorState::new();
+        state.tabs[0].name = "notes.txt".into();
+        state.tabs[0].lines = vec!["PORT=1".into()];
+        state.apply(Action::ToggleComment);
+        assert_eq!(state.tabs[0].lines[0], "PORT=1");
+        assert!(state.status.contains("no comment syntax"));
     }
 
     #[test]

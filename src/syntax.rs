@@ -72,6 +72,228 @@ pub fn too_large(lines: &[String]) -> bool {
     lines.len() > MAX_LINES || lines.iter().map(|l| l.len() + 1).sum::<usize>() > MAX_BYTES
 }
 
+pub fn dotenv_file(name: &str) -> bool {
+    let file = std::path::Path::new(name).file_name().and_then(|s| s.to_str()).unwrap_or(name);
+    let lower = file.to_ascii_lowercase();
+    lower == ".env" || lower.starts_with(".env.") || lower.strip_suffix(".env").is_some_and(|stem| !stem.is_empty())
+}
+
+#[cfg(feature = "syntax")]
+pub fn dotenv_roles(lines: &[String], rows: std::ops::Range<usize>) -> Vec<Vec<(std::ops::Range<usize>, Role)>> {
+    let mut open = None;
+    for line in lines.iter().take(rows.start) {
+        open = paint_dotenv_line(line, open, &mut []);
+    }
+    let mut out = Vec::with_capacity(rows.end.saturating_sub(rows.start));
+    for idx in rows {
+        if idx >= lines.len() {
+            out.push(Vec::new());
+            continue;
+        }
+        let mut roles = vec![Role::Plain; lines[idx].chars().count()];
+        open = paint_dotenv_line(&lines[idx], open, &mut roles);
+        out.push(pack_roles(&roles));
+    }
+    out
+}
+
+#[cfg(feature = "syntax")]
+fn pack_roles(roles: &[Role]) -> Vec<(std::ops::Range<usize>, Role)> {
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < roles.len() {
+        let role = roles[i];
+        let start = i;
+        while i < roles.len() && roles[i] == role {
+            i += 1;
+        }
+        if role != Role::Plain {
+            out.push((start..i, role));
+        }
+    }
+    out
+}
+
+#[cfg(feature = "syntax")]
+fn paint_dotenv_line(line: &str, open: Option<char>, roles: &mut [Role]) -> Option<char> {
+    let chars: Vec<char> = line.chars().collect();
+    if let Some(q) = open {
+        let (end, closed) = consume_quote(&chars, 0, q, roles);
+        if !closed {
+            return Some(q);
+        }
+        let rest = skip_ws(&chars, end);
+        if chars.get(rest) == Some(&'#') {
+            fill(roles, rest, chars.len(), Role::Comment);
+        }
+        return None;
+    }
+    let i = skip_ws(&chars, 0);
+    if chars.get(i) == Some(&'#') {
+        fill(roles, i, chars.len(), Role::Comment);
+        return None;
+    }
+    paint_assignment(&chars, roles)
+}
+
+#[cfg(feature = "syntax")]
+fn paint_assignment(chars: &[char], roles: &mut [Role]) -> Option<char> {
+    let mut i = skip_ws(chars, 0);
+    let mut export_at = None;
+    if starts_word(chars, i, "export") {
+        let after = i + "export".len();
+        if chars.get(after).is_some_and(|c| env_ws(*c)) {
+            export_at = Some(i..after);
+            i = skip_ws(chars, after);
+        }
+    }
+    let key_start = i;
+    while chars.get(i).is_some_and(|c| env_key(*c)) {
+        i += 1;
+    }
+    let key_end = i;
+    if key_end == key_start || !chars[key_start..key_end].iter().any(|c| c.is_ascii_alphanumeric() || *c == '_') {
+        return None;
+    }
+    i = skip_ws(chars, i);
+    if chars.get(i) != Some(&'=') {
+        return None;
+    }
+    let eq = i;
+    i = skip_ws(chars, i + 1);
+    if let Some(span) = export_at {
+        fill(roles, span.start, span.end, Role::Keyword);
+    }
+    fill(roles, key_start, key_end, Role::Function);
+    fill(roles, eq, eq + 1, Role::Punctuation);
+    if i >= chars.len() {
+        return None;
+    }
+    if matches!(chars[i], '"' | '\'' | '`') {
+        let q = chars[i];
+        fill(roles, i, i + 1, Role::String);
+        let (end, closed) = consume_quote(chars, i + 1, q, roles);
+        if !closed {
+            return Some(q);
+        }
+        let rest = skip_ws(chars, end);
+        if chars.get(rest) == Some(&'#') {
+            fill(roles, rest, chars.len(), Role::Comment);
+        }
+        return None;
+    }
+    let mut end = i;
+    while end < chars.len() && chars[end] != '#' {
+        end += 1;
+    }
+    let mut value_end = end;
+    while value_end > i && env_ws(chars[value_end - 1]) {
+        value_end -= 1;
+    }
+    paint_unquoted(chars, i, value_end, roles);
+    if end < chars.len() {
+        fill(roles, end, chars.len(), Role::Comment);
+    }
+    None
+}
+
+#[cfg(feature = "syntax")]
+fn consume_quote(chars: &[char], mut i: usize, q: char, roles: &mut [Role]) -> (usize, bool) {
+    while i < chars.len() {
+        if chars[i] == '\\' && q != '\'' && i + 1 < chars.len() {
+            fill(roles, i, i + 2, Role::Escape);
+            i += 2;
+            continue;
+        }
+        if chars[i] == '\\' && q == '\'' && chars.get(i + 1) == Some(&'\'') {
+            fill(roles, i, i + 2, Role::Escape);
+            i += 2;
+            continue;
+        }
+        if chars[i] == '$' && q != '\'' {
+            if let Some(n) = expansion_end(chars, i, chars.len()) {
+                fill(roles, i, n, Role::Escape);
+                i = n;
+                continue;
+            }
+        }
+        if chars[i] == q {
+            fill(roles, i, i + 1, Role::String);
+            return (i + 1, true);
+        }
+        fill(roles, i, i + 1, Role::String);
+        i += 1;
+    }
+    (chars.len(), false)
+}
+
+#[cfg(feature = "syntax")]
+fn paint_unquoted(chars: &[char], mut i: usize, end: usize, roles: &mut [Role]) {
+    while i < end {
+        if let Some(n) = expansion_end(chars, i, end) {
+            fill(roles, i, n, Role::Escape);
+            i = n;
+        } else {
+            fill(roles, i, i + 1, Role::String);
+            i += 1;
+        }
+    }
+}
+
+#[cfg(feature = "syntax")]
+fn expansion_end(chars: &[char], i: usize, limit: usize) -> Option<usize> {
+    if chars.get(i) != Some(&'$') || i + 1 >= limit {
+        return None;
+    }
+    if chars[i + 1] == '{' {
+        let mut j = i + 2;
+        while j < limit && chars[j] != '}' {
+            j += 1;
+        }
+        return Some(if j < limit { j + 1 } else { limit });
+    }
+    if chars[i + 1].is_ascii_alphanumeric() || chars[i + 1] == '_' {
+        let mut j = i + 2;
+        while j < limit && (chars[j].is_ascii_alphanumeric() || chars[j] == '_') {
+            j += 1;
+        }
+        return Some(j);
+    }
+    None
+}
+
+#[cfg(feature = "syntax")]
+fn fill(roles: &mut [Role], from: usize, to: usize, role: Role) {
+    for slot in roles.iter_mut().take(to).skip(from) {
+        *slot = role;
+    }
+}
+
+#[cfg(feature = "syntax")]
+fn starts_word(chars: &[char], i: usize, word: &str) -> bool {
+    let word: Vec<char> = word.chars().collect();
+    let end = i + word.len();
+    chars.get(i..end) == Some(word.as_slice()) && !chars.get(end).is_some_and(|c| env_key(*c))
+}
+
+#[cfg(feature = "syntax")]
+fn env_key(c: char) -> bool {
+    c.is_ascii_alphanumeric() || c == '_' || c == '.' || c == '-'
+}
+
+#[cfg(feature = "syntax")]
+fn env_ws(c: char) -> bool {
+    c == ' ' || c == '\t' || c == '\r'
+}
+
+#[cfg(feature = "syntax")]
+fn skip_ws(chars: &[char], mut i: usize) -> usize {
+    while chars.get(i).is_some_and(|c| env_ws(*c)) {
+        i += 1;
+    }
+    i
+}
+
 #[cfg(not(feature = "syntax"))]
 mod engine {
     use super::Role;
