@@ -12,7 +12,7 @@
 #   EOE_PREFIX      install prefix            (default: ~/.local, so ee goes in ~/.local/bin)
 #   EOE_SOURCE_DIR  build this directory instead of cloning
 #   EOE_YES=1       answer yes to prompts (e.g. installing Rust)
-#   EOE_NO_OMARCHY=1  skip the Omarchy integration (app launcher entry, Omarchy's Rust installer)
+#   EOE_NO_OMARCHY=1  skip the Omarchy integration (app launcher, Files menu, Omarchy's Rust installer)
 
 set -euo pipefail
 
@@ -181,6 +181,35 @@ remove_launcher() {
     fi
 }
 
+nautilus_extension_dir() {
+    printf '%s/nautilus-python/extensions' "${XDG_DATA_HOME:-$HOME/.local/share}"
+}
+
+# omarchy-tui-install writes an Exec with no file argument. Files can hand a
+# path to ee only after a field code is there. The type list stays empty on
+# purpose: a MimeType would make ee the default for that type, and a file that
+# already has an app should keep it.
+pass_files_to_ee() {
+    local entry="$1"
+    grep -q '^Exec=.*%[FfUu]' "$entry" || sed -i 's/^Exec=.*/& %F/' "$entry"
+}
+
+install_files_menu() {
+    local src="$SOURCE/nautilus/ee.py"
+    [[ -f "$src" ]] || return 0
+    local dir
+    dir="$(nautilus_extension_dir)"
+    mkdir -p "$dir"
+    install -m 644 "$src" "$dir/ee.py"
+}
+
+remove_files_menu() {
+    local path
+    path="$(nautilus_extension_dir)/ee.py"
+    [[ -e "$path" ]] || return 1
+    rm -f "$path"
+}
+
 add_to_omarchy() {
     local icon="$SOURCE/assets/icon.png"
     [[ -f "$icon" ]] || icon="accessories-text-editor"
@@ -190,7 +219,10 @@ add_to_omarchy() {
         entry="$(launcher_entry "$LAUNCHER_NAME")"
         sed -i "s/^Comment=.*/Comment=Eric's Own Editor, a keyboard-first text editor/" "$entry"
         grep -q '^Keywords=' "$entry" || printf 'Keywords=eoe;editor;text;markdown;\n' >> "$entry"
+        pass_files_to_ee "$entry"
+        install_files_menu
         ok "added ee to the Omarchy app launcher (Super+Space, then type ee)"
+        ok "in Files, a file with no default application offers Open with ee (reopen Files to see it)"
     else
         warn "could not add the app launcher entry; ee itself is installed"
     fi
@@ -200,7 +232,8 @@ remove_from_omarchy() {
     local removed=""
     remove_launcher "$LAUNCHER_NAME" && removed=1
     remove_launcher "$OLD_LAUNCHER_NAME" && removed=1
-    [[ -n "$removed" ]] && ok "removed ee from the Omarchy app launcher"
+    remove_files_menu && removed=1
+    [[ -n "$removed" ]] && ok "removed ee from the Omarchy app launcher and from Files"
     return 0
 }
 
@@ -317,4 +350,8 @@ main() {
     fi
 }
 
-main "$@"
+if [[ -n ${BASH_SOURCE[0]:-} && ${BASH_SOURCE[0]} != "$0" ]]; then
+    :
+else
+    main "$@"
+fi

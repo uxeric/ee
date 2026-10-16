@@ -252,6 +252,7 @@ fn render_editor(
     let mut tinted_rows: Vec<(usize, Color)> = Vec::new();
     let mut caret_screen: Vec<usize> = Vec::new();
     let mut lines: Vec<Line> = Vec::new();
+    let selecting = doc.has_selection();
 
     for i in 0..height {
         let Some((line_idx, local)) = map.line_at(top + i) else {
@@ -318,6 +319,11 @@ fn render_editor(
                 caret_cols.push((caret.1, false));
             }
         }
+        let caret_color = |active: bool| match (active, focused) {
+            (true, true) => theme::pal().hot,
+            (true, false) => theme::pal().ghost,
+            (false, _) => theme::pal().ice,
+        };
         let caret_style = |active: bool| match (active, focused) {
             (true, true) => theme::caret(),
             (true, false) => theme::block(theme::pal().ghost),
@@ -326,11 +332,20 @@ fn render_editor(
         let line_roles = syntax.get(line_idx.saturating_sub(source.start)).map(Vec::as_slice).unwrap_or(&[]);
         let start = if width == 0 { 0 } else { local * width };
         for (col, c) in chars.iter().enumerate().skip(start).take(width) {
+            let base = if doc.covers(line_idx, col) {
+                theme::selection()
+            } else if highlights.iter().any(|&(l, s, e)| l == line_idx && s <= col && col < e) {
+                theme::find_match()
+            } else {
+                line_roles.iter().find(|(range, _)| range.contains(&col)).map(|(_, role)| theme::syntax(*role)).unwrap_or_else(theme::text)
+            };
             let style = match caret_cols.iter().find(|(cc, _)| *cc == col) {
+                Some((_, active)) if selecting => {
+                    let color = caret_color(*active);
+                    base.fg(color).underline_color(color).add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
+                }
                 Some((_, active)) => caret_style(*active),
-                None if doc.covers(line_idx, col) => theme::selection(),
-                None if highlights.iter().any(|&(l, s, e)| l == line_idx && s <= col && col < e) => theme::find_match(),
-                None => line_roles.iter().find(|(range, _)| range.contains(&col)).map(|(_, role)| theme::syntax(*role)).unwrap_or_else(theme::text),
+                None => base,
             };
             spans.push(Span::styled(c.to_string(), style));
         }
@@ -858,6 +873,7 @@ mod tests {
     use crate::state::Mode;
     use ratatui::backend::TestBackend;
     use ratatui::layout::{Position, Rect};
+    use ratatui::style::{Color, Modifier};
     use ratatui::{Terminal, buffer::Buffer};
 
     #[test]
@@ -1071,14 +1087,50 @@ mod tests {
             assert_ne!(bg(line, from - 1), p.selection, "line {} col {} is not selected", line, from - 1);
         }
         assert_eq!(bg(1, 0), p.cursor_line, "the caret line keeps its tint outside the selection");
-        assert_eq!((bg(0, 12), bg(1, 17)), (p.ice, p.hot), "a caret at the end of each selection");
+        assert_eq!((bg(0, 12), bg(1, 17)), (p.ice, p.hot), "a caret past the last character stays a block");
         state.apply(crate::keys::Action::SelectHome);
         let t = draw(&state, 30, 6);
-        let bg = |line: u16, col: u16| t.backend().buffer().cell((2 + col, 1 + line)).unwrap().bg;
-        assert_eq!((bg(0, 0), bg(1, 2)), (p.ice, p.hot), "the carets move to each line's first non-blank");
+        let cell = |line: u16, col: u16| t.backend().buffer().cell((2 + col, 1 + line)).unwrap();
+        let bg = |line: u16, col: u16| cell(line, col).bg;
+        let (extra, active) = (cell(0, 0), cell(1, 2));
+        assert_eq!((extra.bg, active.bg), (p.selection, p.selection), "a caret on a selected character keeps the selection");
+        assert_eq!((extra.fg, active.fg), (p.ice, p.hot), "the carets move to each line's first non-blank");
+        assert_eq!((extra.underline_color, active.underline_color), (p.ice, p.hot));
+        assert!(extra.modifier.contains(Modifier::UNDERLINED) && active.modifier.contains(Modifier::UNDERLINED));
         assert_eq!((1..5).map(|c| bg(0, c)).collect::<Vec<_>>(), vec![p.selection; 4]);
         assert_eq!((3..5).map(|c| bg(1, c)).collect::<Vec<_>>(), vec![p.selection; 2], "shift+home selects back from each anchor");
         assert_eq!((bg(1, 1), bg(1, 5)), (p.cursor_line, p.cursor_line), "nothing selected outside the ranges");
+
+        let mut state = EditorState::new();
+        state.tabs[0] = Document::with_content("t", "Cerberus");
+        for _ in 0..7 {
+            state.apply(crate::keys::Action::SelectRight);
+        }
+        assert_eq!((state.tabs[0].cursor, state.tabs[0].selection), ((0, 7), Some(((0, 0), (0, 7)))));
+        let t = draw(&state, 30, 6);
+        let cell = |col: u16| t.backend().buffer().cell((2 + col, 1)).unwrap();
+        let (c, s) = (cell(0), cell(7));
+        assert_eq!((c.symbol(), c.bg, c.underline_color), ("C", p.selection, Color::Reset), "the C is selected and is not the caret");
+        assert_eq!((s.symbol(), s.bg, s.fg, s.underline_color), ("s", p.cursor_line, p.hot, p.hot), "the s under the caret is not selected");
+        assert!(s.modifier.contains(Modifier::UNDERLINED));
+        assert_ne!(s.bg, p.hot, "the caret does not cover the s");
+
+        let mut state = EditorState::new();
+        state.tabs[0] = Document::with_content("t", "Cerberus");
+        for _ in 0..7 {
+            state.apply(crate::keys::Action::Right);
+        }
+        for _ in 0..7 {
+            state.apply(crate::keys::Action::SelectLeft);
+        }
+        assert_eq!((state.tabs[0].cursor, state.tabs[0].selection), ((0, 0), Some(((0, 0), (0, 7)))));
+        let t = draw(&state, 30, 6);
+        let cell = |col: u16| t.backend().buffer().cell((2 + col, 1)).unwrap();
+        let (c, s) = (cell(0), cell(7));
+        assert_eq!((c.symbol(), c.bg, c.fg, c.underline_color), ("C", p.selection, p.hot, p.hot), "the C under the caret stays selected");
+        assert!(c.modifier.contains(Modifier::UNDERLINED));
+        assert_ne!(c.bg, p.hot, "the caret does not cover the C");
+        assert_eq!((s.symbol(), s.bg), ("s", p.cursor_line), "the s is outside the selection");
     }
 
     #[test]

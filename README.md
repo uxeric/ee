@@ -36,7 +36,7 @@ The project is `eoe`, the command is `ee`. Type it, jack in, edit text in neon.
 curl -fsSL https://raw.githubusercontent.com/uxeric/ee/HEAD/install.sh | bash
 ```
 
-It builds `ee` from source into `~/.local/bin/ee`, no root needed, and offers to install Rust if you don't have it. On Omarchy it also adds `ee` to the app launcher.
+It builds `ee` from source into `~/.local/bin/ee`, no root needed, and offers to install Rust if you don't have it. On Omarchy it also adds `ee` to the app launcher. In Files, selecting a file that has no default application offers **Open with ee**. A file that already has one keeps it. Reopen Files after installing to see the item.
 
 `ee` checks for updates in the background and offers to restart into a new version; `ee --update` updates by hand and `ee --version` shows what you have. You need a terminal that passes `Ctrl` and `Alt` through: Alacritty, kitty, Ghostty, foot and WezTerm all do.
 
