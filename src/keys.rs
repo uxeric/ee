@@ -141,7 +141,7 @@ impl DoubleShift {
 }
 
 pub const PALETTE: &[(&str, &str, &str)] = &[
-    ("find_action", "Command palette", "Alt+Shift+A"),
+    ("find_action", "Command palette", "Ctrl+Space"),
     ("save_all", "Save all", "Ctrl+S"),
     ("open_file", "Open or create a file", "Ctrl+N"),
     ("rename", "Rename file / save as", "Shift+F6"),
@@ -371,6 +371,8 @@ impl Keymap {
                 let c = if shift && (ctrl || alt) { c.to_ascii_uppercase() } else { c };
                 if ctrl && alt && c == 'l' {
                     Some(Action::Reformat)
+                } else if ctrl && !alt && !shift && c == ' ' {
+                    Some(Action::FindAction)
                 } else if ctrl && c == '7' {
                     Some(Action::ToggleComment)
                 } else if ctrl {
@@ -682,7 +684,7 @@ mod tests {
     #[test]
     fn unmapped_keys_return_none() {
         let km = keymap();
-        assert_eq!(km.dispatch(&event(KeyCode::Char(' '), true, false, false)), None);
+        assert_eq!(km.dispatch(&event(KeyCode::Char(' '), true, false, true)), None);
         assert_eq!(km.dispatch(&event(KeyCode::Home, false, true, false)), None);
         assert_eq!(km.dispatch(&event(KeyCode::End, false, true, false)), None);
         assert_eq!(km.dispatch(&event(KeyCode::Char(' '), false, true, false)), None);
@@ -773,6 +775,7 @@ mod tests {
             (event(KeyCode::Down, false, true, true), Action::MoveLineDown),
             (event(KeyCode::Backspace, true, false, true), Action::LastEditLocation),
             (event(KeyCode::F(1), false, false, false), Action::FindAction),
+            (event(KeyCode::Char(' '), true, false, false), Action::FindAction),
             (event(KeyCode::F(12), true, false, false), Action::FileStructure),
             (event(KeyCode::Char('A'), true, false, true), Action::FindAction),
             (event(KeyCode::Char('A'), false, true, true), Action::FindAction),

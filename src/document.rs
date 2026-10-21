@@ -39,6 +39,22 @@ fn contains(outer: Selection, inner: Selection) -> bool {
     outer.0 <= inner.0 && inner.1 <= outer.1
 }
 
+fn period_is_abbreviation(pos: &[(usize, usize, char)], dot: usize) -> bool {
+    if dot == 0 || !pos[dot - 1].2.is_ascii_alphabetic() {
+        return false;
+    }
+    let mut start = dot;
+    while start > 0 && pos[start - 1].2.is_ascii_alphabetic() {
+        start -= 1;
+    }
+    let word: String = pos[start..dot].iter().map(|p| p.2).collect();
+    word.chars().count() == 1
+        || matches!(
+            word.to_ascii_lowercase().as_str(),
+            "mr" | "mrs" | "ms" | "dr" | "prof" | "sr" | "jr" | "vs" | "etc" | "eg" | "ie" | "cf" | "inc" | "ltd" | "st"
+        )
+}
+
 fn enclosing_pair(chars: &[char], start: usize, end: usize, open: char, close: char) -> Option<(usize, usize)> {
     if open == close {
         let o = chars[..start.min(chars.len())].iter().rposition(|&c| c == open)?;
@@ -960,6 +976,7 @@ impl Document {
         let last_len = self.lines[el].trim_end().chars().count();
         out.push(((sl, first), (el, last_len.max(first.min(len(el))))));
         out.push(((sl, 0), (el, len(el))));
+        self.push_sentences(&mut out, sl, el);
         let blank = |l: usize| self.lines[l].trim().is_empty();
         if !blank(sl) && !blank(el) {
             let (mut a, mut b) = (sl, el);
@@ -974,6 +991,76 @@ impl Document {
         let last = self.lines.len() - 1;
         out.push(((0, 0), (last, len(last))));
         out
+    }
+
+    fn push_sentences(&self, out: &mut Vec<Selection>, sl: usize, el: usize) {
+        if self.lines[sl].trim().is_empty() || self.lines[el].trim().is_empty() {
+            return;
+        }
+        let mut top = sl;
+        let mut bot = el;
+        while top > 0 && !self.lines[top - 1].trim().is_empty() {
+            top -= 1;
+        }
+        while bot + 1 < self.lines.len() && !self.lines[bot + 1].trim().is_empty() {
+            bot += 1;
+        }
+        let mut pos = Vec::new();
+        for line in top..=bot {
+            for (col, ch) in self.lines[line].chars().enumerate() {
+                pos.push((line, col, ch));
+            }
+            if line != bot {
+                pos.push((line, self.lines[line].chars().count(), '\n'));
+            }
+        }
+        let Some(mut from) = pos.iter().position(|p| !p.2.is_whitespace()) else {
+            return;
+        };
+        let mut i = from;
+        while i < pos.len() {
+            let ch = pos[i].2;
+            if ch == '.' || ch == '!' || ch == '?' || ch == '…' {
+                let term = i;
+                if ch == '.' {
+                    while i + 1 < pos.len() && pos[i + 1].2 == '.' {
+                        i += 1;
+                    }
+                } else if ch == '!' || ch == '?' {
+                    while i + 1 < pos.len() && (pos[i + 1].2 == '!' || pos[i + 1].2 == '?') {
+                        i += 1;
+                    }
+                }
+                while i + 1 < pos.len() && matches!(pos[i + 1].2, '"' | '\'' | '`' | ')' | ']' | '}' | '”' | '’' | '»') {
+                    i += 1;
+                }
+                let next = i + 1;
+                let at_boundary = next >= pos.len() || pos[next].2.is_whitespace();
+                let abbreviated = ch == '.' && i == term && period_is_abbreviation(&pos, term);
+                if at_boundary && !abbreviated {
+                    out.push(((pos[from].0, pos[from].1), (pos[i].0, pos[i].1 + 1)));
+                    from = next;
+                    while from < pos.len() && pos[from].2.is_whitespace() {
+                        from += 1;
+                    }
+                    if from >= pos.len() {
+                        return;
+                    }
+                    i = from;
+                    continue;
+                }
+            }
+            i += 1;
+        }
+        if from < pos.len() {
+            let mut end = pos.len() - 1;
+            while end > from && pos[end].2.is_whitespace() {
+                end -= 1;
+            }
+            if !pos[end].2.is_whitespace() {
+                out.push(((pos[from].0, pos[from].1), (pos[end].0, pos[end].1 + 1)));
+            }
+        }
     }
 
     pub fn home(&mut self) {
@@ -2662,6 +2749,50 @@ mod tests {
         }
         assert_eq!((d.selection, d.cursor), (None, (1, 18)), "back to the caret where it started");
         assert!(!d.dirty, "selection changes are not edits");
+    }
+
+    #[test]
+    fn extend_selection_takes_a_sentence_before_the_paragraph() {
+        let steps = |text: &str, cursor: (usize, usize)| {
+            let mut d = doc_with(text);
+            d.cursor = cursor;
+            let mut seen = Vec::new();
+            for _ in 0..8 {
+                let before = d.selected_text();
+                d.extend_selection();
+                let now = d.selected_text();
+                if now == before {
+                    break;
+                }
+                seen.push(now.unwrap());
+            }
+            seen
+        };
+        assert_eq!(
+            steps("Dr. Smith left. Then he returned.\nHe kept going.\n\nTail.", (0, 4)),
+            [
+                "Smith".to_string(),
+                "Dr. Smith left.".into(),
+                "Dr. Smith left. Then he returned.".into(),
+                "Dr. Smith left. Then he returned.\nHe kept going.".into(),
+                "Dr. Smith left. Then he returned.\nHe kept going.\n\nTail.".into(),
+            ]
+        );
+        assert_eq!(
+            steps("Hello\nworld. More stays.\n\nTail.", (0, 0)),
+            ["Hello".to_string(), "Hello\nworld.".into(), "Hello\nworld. More stays.".into(), "Hello\nworld. More stays.\n\nTail.".into()]
+        );
+        assert_eq!(
+            steps("Pi is 3.14 today. Next bit.", (0, 0)),
+            ["Pi".to_string(), "Pi is 3.14 today.".into(), "Pi is 3.14 today. Next bit.".into()]
+        );
+        let mut d = doc_with("Hello\nworld. More stays.\n\nTail.");
+        d.cursor = (0, 0);
+        d.extend_selection();
+        d.extend_selection();
+        assert_eq!(d.selected_text().as_deref(), Some("Hello\nworld."));
+        d.shrink_selection();
+        assert_eq!(d.selected_text().as_deref(), Some("Hello"));
     }
 
     #[test]
