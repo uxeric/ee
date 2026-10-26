@@ -85,6 +85,7 @@ fn render_picker(frame: &mut Frame, state: &EditorState, area: Rect) {
         PickerKind::Actions => ("command palette", "run"),
         PickerKind::Structure => ("file structure", "jump"),
         PickerKind::Files => ("open or create a file", "open"),
+        PickerKind::Recent => ("recent files", "open"),
         PickerKind::Themes => ("theme", "keep"),
     };
     let p = theme::pal();
@@ -964,7 +965,7 @@ mod tests {
     }
 
     #[test]
-    fn the_menu_lists_copy_paste_and_both_herdr_rows_on_the_clicked_cell() {
+    fn the_menu_lists_cut_copy_paste_and_both_herdr_rows_on_the_clicked_cell() {
         let area = Rect::new(0, 0, 80, 24);
         let mut state = EditorState::new();
         state.tabs[0] = Document::with_content("t", "alpha\nbeta");
@@ -972,22 +973,23 @@ mod tests {
         let mut t = Terminal::new(TestBackend::new(area.width, area.height)).unwrap();
         t.draw(|f| render(f, &state)).unwrap();
         let rows = render_rows(t.backend().buffer());
-        let shown: Vec<&String> = rows.iter().filter(|row| row.contains("Copy") || row.contains("Paste") || row.contains("herdr")).collect();
-        assert_eq!(shown.len(), 4, "all four rows stay on screen when the click is on the last line: {:?}", shown);
-        assert!(shown[0].contains("Copy") && shown[0].contains("Ctrl+C"), "{}", shown[0]);
-        assert!(shown[1].contains("Paste") && shown[1].contains("Ctrl+V"), "{}", shown[1]);
-        assert!(shown[2].contains("Copy to herdr") && shown[2].contains("Alt+Shift+E"), "{}", shown[2]);
-        assert!(shown[3].contains("Move to herdr") && shown[3].contains("Alt+Shift+M"), "{}", shown[3]);
+        let shown: Vec<&String> = rows.iter().filter(|row| row.contains("Cut") || row.contains("Copy") || row.contains("Paste") || row.contains("herdr")).collect();
+        assert_eq!(shown.len(), 5, "all five rows stay on screen when the click is on the last line: {:?}", shown);
+        assert!(shown[0].contains("Cut") && shown[0].contains("Ctrl+X"), "{}", shown[0]);
+        assert!(shown[1].contains("Copy") && shown[1].contains("Ctrl+C"), "{}", shown[1]);
+        assert!(shown[2].contains("Paste") && shown[2].contains("Ctrl+V"), "{}", shown[2]);
+        assert!(shown[3].contains("Copy to herdr") && shown[3].contains("Alt+Shift+E"), "{}", shown[3]);
+        assert!(shown[4].contains("Move to herdr") && shown[4].contains("Alt+Shift+M"), "{}", shown[4]);
         let rect = menu_rect(area, &state).unwrap();
         assert!(rect.bottom() <= area.bottom() && rect.y < 22, "the menu opens above a click on the last line");
-        assert!(matches!(menu_hit(area, &state, rect.x + 2, rect.y + 2), MenuHit::Row(1)), "the second inner row is Paste");
+        assert!(matches!(menu_hit(area, &state, rect.x + 2, rect.y + 3), MenuHit::Row(2)), "the third inner row is Paste");
         assert!(matches!(menu_hit(area, &state, rect.x, rect.y + 1), MenuHit::Frame));
         assert!(matches!(menu_hit(area, &state, 0, 0), MenuHit::Outside));
         state.apply(crate::keys::Action::Down);
         t.draw(|f| render(f, &state)).unwrap();
         let buf = t.backend().buffer().clone();
-        let paste = (rect.y + 2, rect.x + 4);
-        assert_eq!(buf.cell(Position { x: paste.1, y: paste.0 }).unwrap().bg, theme::pal().selection, "down highlights Paste");
+        let paste = (rect.y + 3, rect.x + 4);
+        assert_eq!(buf.cell(Position { x: paste.1, y: paste.0 }).unwrap().bg, theme::pal().selection, "the menu starts on Copy, and down highlights Paste");
     }
 
     #[test]

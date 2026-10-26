@@ -9,6 +9,7 @@ mod hyprland;
 mod keys;
 mod markdown;
 mod motion;
+mod recent;
 mod rust_view;
 mod state;
 mod syntax;
@@ -65,6 +66,7 @@ fn main() -> std::io::Result<()> {
         .collect();
 
     let mut state = EditorState::new();
+    state.recent = recent::Recent::load(recent::path());
     if !file_args.is_empty() {
         let mut tabs: Vec<Document> = Vec::with_capacity(file_args.len());
         let mut new_file = None;
@@ -73,6 +75,9 @@ fn main() -> std::io::Result<()> {
                 Ok((doc, is_new)) => {
                     if is_new && new_file.is_none() {
                         new_file = Some(doc.name.clone());
+                    }
+                    if !is_new {
+                        state.recent.record(path);
                     }
                     tabs.push(doc);
                 }
@@ -391,7 +396,7 @@ mod tests {
     }
 
     #[test]
-    fn right_click_keeps_a_selection_it_lands_in_and_the_menu_copies_pastes_and_leaves_the_line() {
+    fn right_click_keeps_a_selection_it_lands_in_and_the_menu_cuts_copies_pastes_and_leaves_the_line() {
         use state::Mode;
         let area = Rect::new(0, 0, 80, 24);
         let mut state = EditorState::new();
@@ -410,7 +415,7 @@ mod tests {
         state.apply(Action::Newline);
         assert!(state.status.starts_with("copied"));
         assert!(matches!(state.mode, Mode::Normal));
-        assert_eq!(state.tabs[0].lines, vec!["hello world", "second"], "copy leaves the text");
+        assert_eq!(state.tabs[0].lines, vec!["hello world", "second"], "Enter starts on Copy, and copy leaves the text");
 
         let on_second = (0..40).find(|&x| ui::mouse_to_doc(editor, x, editor.y + 1, &state.tabs[0]) == Some((1, 0))).unwrap();
         context_mouse(&mut state, area, right, on_second, editor.y + 1);
@@ -419,7 +424,7 @@ mod tests {
         let rect = ui::menu_rect(area, &state).unwrap();
         context_mouse(&mut state, area, left, rect.x, rect.y + 1);
         assert!(matches!(state.mode, Mode::Menu), "the frame is not a row");
-        context_mouse(&mut state, area, left, rect.x + 2, rect.y + 2);
+        context_mouse(&mut state, area, left, rect.x + 2, rect.y + 3);
         assert_eq!(state.tabs[0].lines[1], "worldsecond");
         assert!(matches!(state.mode, Mode::Normal));
 
@@ -439,5 +444,14 @@ mod tests {
         assert!(matches!(state.mode, Mode::Normal), "scrolling closes the menu");
         state.apply(Action::InsertChar('Q'));
         assert!(state.tabs[0].lines[1].contains('Q'));
+
+        state.tabs[0].selection = Some(((0, 0), (0, 6)));
+        state.tabs[0].cursor = (0, 6);
+        context_mouse(&mut state, area, right, editor.x + 1, editor.y);
+        let rect = ui::menu_rect(area, &state).unwrap();
+        context_mouse(&mut state, area, left, rect.x + 2, rect.y + 1);
+        assert_eq!(state.tabs[0].lines[0], "world", "Cut removes the selection it opened on");
+        assert!(state.status.starts_with("copied"), "{}", state.status);
+        assert!(matches!(state.mode, Mode::Normal));
     }
 }

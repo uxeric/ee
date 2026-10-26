@@ -23,8 +23,9 @@ pub enum Mode {
     Menu,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub enum MenuOp {
+    Cut,
     Copy,
     Paste,
     Send,
@@ -32,6 +33,7 @@ pub enum MenuOp {
 }
 
 pub const MENU: &[(&str, &str, MenuOp)] = &[
+    ("Cut", "Ctrl+X", MenuOp::Cut),
     ("Copy", "Ctrl+C", MenuOp::Copy),
     ("Paste", "Ctrl+V", MenuOp::Paste),
     ("Copy to herdr", "Alt+Shift+E", MenuOp::Send),
@@ -149,6 +151,7 @@ pub struct EditorState {
     pub theme_roots: crate::theme::Roots,
     pub theme_choice: String,
     pub config_path: Option<std::path::PathBuf>,
+    pub recent: crate::recent::Recent,
     theme_before: Option<crate::theme::Palette>,
 }
 
@@ -186,6 +189,7 @@ impl EditorState {
             theme_roots: crate::theme::Roots::default(),
             theme_choice: "omarchy".to_string(),
             config_path: None,
+            recent: crate::recent::Recent::default(),
             theme_before: None,
         }
     }
@@ -291,7 +295,8 @@ impl EditorState {
             doc.click_at(line, col, 1);
             self.drag_anchor = Some(doc.cursor);
         }
-        self.menu = Some(Menu { x, y, selected: 0 });
+        let selected = MENU.iter().position(|item| item.2 == MenuOp::Copy).unwrap_or(0);
+        self.menu = Some(Menu { x, y, selected });
         self.mode = Mode::Menu;
     }
 
@@ -311,6 +316,10 @@ impl EditorState {
         };
         self.close_menu();
         match op {
+            MenuOp::Cut => {
+                self.copy();
+                self.active_doc().cut();
+            }
             MenuOp::Copy => self.copy(),
             MenuOp::Paste => self.paste(),
             MenuOp::Send => self.send_to_pane(false),
@@ -521,6 +530,7 @@ impl EditorState {
             }
             Action::CloseTab => return self.close_tab(pending == Some(Pending::Close)),
             Action::OpenFile => self.open_picker(PickerKind::Files),
+            Action::OpenRecent => self.open_picker(PickerKind::Recent),
             Action::Rename => {
                 let doc = &self.tabs[self.active];
                 let current = doc.path.clone().unwrap_or_else(|| doc.name.clone());
@@ -785,6 +795,20 @@ impl EditorState {
                     .map(|f| PickItem { label: f.clone(), detail: String::new(), target: PickTarget::File(root.join(f).to_string_lossy().to_string()) })
                     .collect()
             }
+            PickerKind::Recent => {
+                let items: Vec<PickItem> = self
+                    .recent
+                    .files()
+                    .iter()
+                    .filter(|f| Path::new(f).is_file())
+                    .map(|f| PickItem { label: shorten_home(f), detail: String::new(), target: PickTarget::File(f.clone()) })
+                    .collect();
+                if items.is_empty() {
+                    self.status = "no recent files yet".to_string();
+                    return;
+                }
+                items
+            }
         };
         self.menu = None;
         let mut picker = Picker { kind, input: String::new(), items, shown: Vec::new(), selected: 0 };
@@ -835,6 +859,7 @@ impl EditorState {
             }
             Action::FileStructure => self.open_picker(PickerKind::Structure),
             Action::OpenFile => self.open_picker(PickerKind::Files),
+            Action::OpenRecent => self.open_picker(PickerKind::Recent),
             Action::SwitchTheme => self.open_picker(PickerKind::Themes),
             Action::Newline => {
                 let picker = self.picker.take().unwrap();
@@ -931,6 +956,7 @@ impl EditorState {
         {
             self.active = i;
             self.cues.push(Cue::Opened);
+            self.recent.record(path);
             return;
         }
         match Document::open_or_new(path) {
@@ -938,6 +964,8 @@ impl EditorState {
                 self.cues.push(Cue::Opened);
                 if is_new {
                     self.note_new_file(&doc.name);
+                } else {
+                    self.recent.record(path);
                 }
                 if self.tabs[self.active].is_blank_untitled() {
                     self.tabs[self.active] = doc;
@@ -1336,11 +1364,19 @@ fn expand_home(path: &str) -> String {
     }
 }
 
+fn shorten_home(path: &str) -> String {
+    match std::env::var("HOME").ok().and_then(|home| path.strip_prefix(&format!("{}/", home.trim_end_matches('/'))).map(String::from)) {
+        Some(rest) => format!("~/{}", rest),
+        None => path.to_string(),
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PickerKind {
     Actions,
     Structure,
     Files,
+    Recent,
     Themes,
 }
 
@@ -1963,6 +1999,39 @@ mod tests {
         state.apply(Action::FileStructure);
         assert!(matches!(state.mode, Mode::Normal));
         assert!(state.status.starts_with("no outline for this file"));
+    }
+
+    #[test]
+    fn open_recent_lists_files_that_were_opened_newest_first() {
+        let dir = Scratch::new("recent");
+        let a = dir.write("a.txt", "alpha");
+        let b = dir.write("b.txt", "beta");
+        let gone = dir.write("gone.txt", "");
+        let mut state = EditorState::new();
+        state.recent = crate::recent::Recent::load(Some(dir.0.join("state/recent")));
+        state.apply(Action::OpenRecent);
+        assert!(matches!(state.mode, Mode::Normal));
+        assert_eq!(state.status, "no recent files yet");
+
+        state.open_path(&gone);
+        state.open_path(&a);
+        state.open_path(&b);
+        state.open_path(&dir.path("brand-new.txt"));
+        fs::remove_file(&gone).unwrap();
+        state.apply(Action::OpenRecent);
+        let picker = state.picker.as_ref().unwrap();
+        let labels: Vec<&str> = picker.shown.iter().map(|(i, _)| picker.item(*i).label.as_str()).collect();
+        let canon = |p: &str| fs::canonicalize(p).unwrap().to_string_lossy().into_owned();
+        assert_eq!(labels, vec![shorten_home(&canon(&b)), shorten_home(&canon(&a))], "newest first; deleted and never-saved files are left out");
+
+        state.apply(Action::Down);
+        state.apply(Action::Newline);
+        assert_eq!(state.tabs[state.active].lines, vec!["alpha"]);
+        let mut restarted = EditorState::new();
+        restarted.recent = crate::recent::Recent::load(Some(dir.0.join("state/recent")));
+        restarted.apply(Action::OpenRecent);
+        restarted.apply(Action::Newline);
+        assert_eq!(restarted.tabs[0].lines, vec!["alpha"], "switching to an open file counts as opening it, and the list survives a restart");
     }
 
     #[test]

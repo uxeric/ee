@@ -96,6 +96,7 @@ pub enum Action {
     Reformat,
     Rename,
     OpenFile,
+    OpenRecent,
     NextTab,
     PreviousTab,
     CloseTab,
@@ -144,6 +145,7 @@ pub const PALETTE: &[(&str, &str, &str)] = &[
     ("find_action", "Command palette", "Ctrl+Space"),
     ("save_all", "Save all", "Ctrl+S"),
     ("open_file", "Open or create a file", "Ctrl+N"),
+    ("open_recent", "Open a recent file", "Ctrl+O"),
     ("rename", "Rename file / save as", "Shift+F6"),
     ("close_tab", "Close tab", "Ctrl+F4"),
     ("next_tab", "Next tab", "Ctrl+]"),
@@ -249,6 +251,7 @@ impl Action {
             "reformat" => Action::Reformat,
             "rename" => Action::Rename,
             "open_file" => Action::OpenFile,
+            "open_recent" => Action::OpenRecent,
             "next_tab" => Action::NextTab,
             "previous_tab" => Action::PreviousTab,
             "close_tab" => Action::CloseTab,
@@ -306,6 +309,7 @@ impl Keymap {
             'j' => Some(Action::JoinLines),
             'k' => Some(Action::Reformat),
             'n' | 'N' => Some(Action::OpenFile),
+            'o' => Some(Action::OpenRecent),
             'q' => Some(Action::Quit),
             'r' => Some(Action::Replace),
             's' => Some(Action::SaveAll),
@@ -582,6 +586,7 @@ mod tests {
             ('j', Action::JoinLines),
             ('k', Action::Reformat),
             ('n', Action::OpenFile),
+            ('o', Action::OpenRecent),
             ('q', Action::Quit),
             ('r', Action::Replace),
             ('s', Action::SaveAll),
@@ -688,9 +693,9 @@ mod tests {
         assert_eq!(km.dispatch(&event(KeyCode::Home, false, true, false)), None);
         assert_eq!(km.dispatch(&event(KeyCode::End, false, true, false)), None);
         assert_eq!(km.dispatch(&event(KeyCode::Char(' '), false, true, false)), None);
-        assert_eq!(km.dispatch(&event(KeyCode::Char('o'), true, false, false)), None);
-        assert_eq!(km.dispatch(&event(KeyCode::Char('o'), false, true, false)), None);
-        assert_eq!(km.dispatch(&event(KeyCode::Char('o'), true, false, true)), None);
+        assert_eq!(km.dispatch(&event(KeyCode::Char('t'), true, false, false)), None);
+        assert_eq!(km.dispatch(&event(KeyCode::Char('t'), false, true, false)), None);
+        assert_eq!(km.dispatch(&event(KeyCode::Char('t'), true, false, true)), None);
     }
 
     #[test]

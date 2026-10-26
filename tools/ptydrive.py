@@ -43,6 +43,7 @@ def sandbox_env(home, extra=None):
         'TERM': 'xterm-256color',
         'XDG_CONFIG_HOME': os.path.join(home, '.config'),
         'XDG_DATA_HOME': os.path.join(home, '.local', 'share'),
+        'XDG_STATE_HOME': os.path.join(home, '.local', 'state'),
         'EOE_NO_UPDATE_CHECK': '1',
     }
     env.update(extra or {})

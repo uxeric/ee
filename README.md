@@ -144,6 +144,7 @@ In the replace bar, <kbd>Tab</kbd> switches between the Find and Replace fields.
 |---|---|
 | Save all | <kbd>Ctrl</kbd>+<kbd>S</kbd> / <kbd>Alt</kbd>+<kbd>S</kbd> |
 | Open or create a file: fuzzy-find files under the current folder, or type a path | <kbd>Ctrl</kbd>+<kbd>N</kbd> / <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>N</kbd> / <kbd>Alt</kbd>+<kbd>N</kbd> |
+| Open a recent file: the last 20 files you opened, newest first | <kbd>Ctrl</kbd>+<kbd>O</kbd> / <kbd>Alt</kbd>+<kbd>O</kbd> |
 | File structure: jump to a heading in a markdown or Word file | <kbd>Ctrl</kbd>+<kbd>F12</kbd> |
 | Command palette: every action, with its keys | <kbd>F1</kbd> / <kbd>Ctrl</kbd>+<kbd>Space</kbd>, or click **F1 command** at the bottom right |
 | Switch theme: Follow Omarchy, Neon, or any installed Omarchy theme, previewed as you move | <kbd>Alt</kbd>+<kbd>`</kbd> (<kbd>Ctrl</kbd>+<kbd>`</kbd> with the kitty keyboard protocol) |
@@ -164,9 +165,9 @@ In the replace bar, <kbd>Tab</kbd> switches between the Find and Replace fields.
 |---|---|
 | Send the selection, or the caret's line when nothing is selected (every caret's line with multi-cursor), to the other herdr pane, without pressing Enter | <kbd>Alt</kbd>+<kbd>Shift</kbd>+<kbd>E</kbd> / <kbd>Ctrl</kbd>+<kbd>Enter</kbd> |
 | Move that text to the herdr pane: send it, then remove it from the file | <kbd>Alt</kbd>+<kbd>Shift</kbd>+<kbd>M</kbd> / <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>Enter</kbd> |
-| Right-click the text | Copy, Paste, Copy to herdr, Move to herdr |
+| Right-click the text | Cut, Copy, Paste, Copy to herdr, Move to herdr |
 
-A right-click inside a selection keeps it, so Copy copies that selection. A right-click anywhere else puts the caret on that line first. Copy and Paste are the clipboard. The herdr rows send the selection when there is one, and the caret's whole lines otherwise, the same as the keys above. Up and down move through the menu, Enter picks, and Esc closes it. Inside herdr, a right-click in the text opens this menu; a right-click on the pane frame still opens herdr's own menu.
+A right-click inside a selection keeps it, so Cut and Copy act on that selection. A right-click anywhere else puts the caret on that line first. Cut, Copy and Paste are the clipboard; with nothing selected, Cut takes the caret's whole line, the same as <kbd>Ctrl</kbd>+<kbd>X</kbd>. The herdr rows send the selection when there is one, and the caret's whole lines otherwise, the same as the keys above. Up and down move through the menu, which starts on Copy, Enter picks, and Esc closes it. Inside herdr, a right-click in the text opens this menu; a right-click on the pane frame still opens herdr's own menu.
 
 <kbd>Ctrl</kbd>+<kbd>Enter</kbd> and <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>Enter</kbd> need a terminal with the kitty keyboard protocol; the <kbd>Alt</kbd>+<kbd>Shift</kbd> keys work everywhere.
 
