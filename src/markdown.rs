@@ -35,6 +35,7 @@ pub struct RenderedLine {
     pub centered: bool,
     pub anchor: Option<String>,
     pub nowrap: bool,
+    pub image: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -398,6 +399,7 @@ pub fn build(lines: &[String]) -> MdView {
     let mut code_lang: Vec<Option<String>> = vec![None; lines.len()];
     let mut centered = vec![false; lines.len()];
     let mut decor = vec![false; lines.len()];
+    let mut images: Vec<Option<String>> = vec![None; lines.len()];
     let mut links: Vec<String> = Vec::new();
     let mut html: Vec<(String, Style)> = Vec::new();
     let mut center_stack: Vec<Option<usize>> = Vec::new();
@@ -452,7 +454,15 @@ pub fn build(lines: &[String]) -> MdView {
                         links.push(dest_url.to_string());
                         top.fg(pal().ice).add_modifier(Modifier::UNDERLINED)
                     }
-                    Tag::Image { .. } => top.fg(pal().amber).add_modifier(Modifier::ITALIC),
+                    Tag::Image { dest_url, .. } => {
+                        if let Some(src) = crate::ghostty::local_png(dest_url.as_ref()) {
+                            let li = line_of(r.start);
+                            if images[li].is_none() {
+                                images[li] = Some(src.to_string());
+                            }
+                        }
+                        top.fg(pal().amber).add_modifier(Modifier::ITALIC)
+                    }
                     Tag::BlockQuote(kind) => {
                         let (a, z) = (line_of(r.start), line_of(r.end.saturating_sub(1)));
                         let alert = kind.map(alert_index);
@@ -644,6 +654,11 @@ pub fn build(lines: &[String]) -> MdView {
                                 ("img", _) => {
                                     let alt = attr(&attrs, "alt").unwrap_or_default();
                                     let src_attr = attr(&attrs, "src").unwrap_or_default();
+                                    if let Some(src) = crate::ghostty::local_png(&src_attr) {
+                                        if images[li].is_none() {
+                                            images[li] = Some(src.to_string());
+                                        }
+                                    }
                                     if let Some((label, label_bg, message, message_bg)) = shields_badge(&src_attr) {
                                         let end = range.end;
                                         if label.is_empty() {
@@ -765,6 +780,7 @@ pub fn build(lines: &[String]) -> MdView {
             let heading = matches!(kind, LineKind::Heading(_));
             let mut rl = compose(line, kind, ps, quote_lines[li], quote_kind[li], code_lang[li].as_deref(), engine[li].clone());
             rl.centered = centered[li];
+            rl.image = images[li].take();
             if heading {
                 rl.anchor = Some(slug(&rl.segs.iter().map(|s| s.text.as_str()).collect::<String>()));
             }

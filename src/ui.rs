@@ -26,7 +26,9 @@ pub fn render(frame: &mut Frame, state: &EditorState) {
         .collect();
 
     render_tab_bar(frame, state, tab_bar);
-    render_editor(frame, doc, &highlights, matches!(state.mode, Mode::Normal | Mode::Menu), editor_area);
+    let chip = context_chip(area, state);
+    let allow_images = state.reload.is_none() && state.update.is_none() && state.picker.is_none() && state.menu.is_none();
+    render_editor(frame, doc, &highlights, matches!(state.mode, Mode::Normal | Mode::Menu), editor_area, allow_images, chip.as_ref().map(ContextChip::cover));
     if let Some(fb) = find_bar {
         match state.mode {
             Mode::Find | Mode::Replace => render_find_bar(frame, state, &hits, fb),
@@ -40,12 +42,13 @@ pub fn render(frame: &mut Frame, state: &EditorState) {
     }
     if state.reload.is_some() {
         render_reload_modal(frame, state, area);
-    } else {
+    } else if state.update.is_some() {
         render_update_modal(frame, state, area);
     }
     if state.reload.is_none() && state.update.is_none() {
         render_menu(frame, state, area);
     }
+    render_context_chip(frame, state, area);
 }
 
 pub fn popup_rect(area: Rect, state: &EditorState) -> Option<Rect> {
@@ -240,6 +243,8 @@ fn render_editor(
     highlights: &[(usize, usize, usize)],
     focused: bool,
     area: Rect,
+    allow_images: bool,
+    cover: Option<Rect>,
 ) {
     let height = area.height as usize;
     let (top, _) = visible_origin(doc, area);
@@ -254,6 +259,7 @@ fn render_editor(
     let mut caret_screen: Vec<usize> = Vec::new();
     let mut lines: Vec<Line> = Vec::new();
     let selecting = doc.has_selection();
+    doc.clear_images();
 
     for i in 0..height {
         let Some((line_idx, local)) = map.line_at(top + i) else {
@@ -276,6 +282,31 @@ fn render_editor(
         let mut spans = vec![Span::styled(number, number_style)];
         if let Some(view) = markdown.as_ref().filter(|_| !doc.is_raw_line(line_idx)) {
             if let Some(rendered) = view.lines.get(line_idx) {
+                if let Some(src) = rendered.image.as_deref() {
+                    if let Some(path) = image_path(doc, src) {
+                        let rows = crate::ghostty::IMAGE_ROWS;
+                        if local == 0 {
+                            let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("png");
+                            let style = Style::default().fg(theme::pal().ghost).add_modifier(Modifier::ITALIC);
+                            spans.push(Span::styled(name.to_string(), style));
+                        }
+                        if allow_images && local == 0 && i + rows <= height && width > 0 {
+                            let place = crate::ghostty::Place {
+                                x: area.x + gutter_w as u16,
+                                y: area.y + i as u16,
+                                cols: width as u16,
+                                rows: rows as u16,
+                                path,
+                            };
+                            let place_rect = Rect::new(place.x, place.y, place.cols, place.rows);
+                            if !overlaps(cover, place_rect) {
+                                doc.note_image(place);
+                            }
+                        }
+                        lines.push(Line::from(spans));
+                        continue;
+                    }
+                }
                 if let Some(bg) = rendered.bg {
                     tinted_rows.push((i, bg));
                 }
@@ -397,12 +428,39 @@ fn screen_map(doc: &Document, width: usize) -> crate::wrap::Map {
     crate::wrap::Map::from_counts(&counts)
 }
 
+fn image_path(doc: &Document, src: &str) -> Option<std::path::PathBuf> {
+    if !doc.shows_graphics() {
+        return None;
+    }
+    crate::ghostty::png_file(doc.path.as_deref(), src)
+}
+
+fn image_line(doc: &Document, line: usize) -> bool {
+    if !doc.shows_graphics() || doc.is_raw_line(line) {
+        return false;
+    }
+    let Some(view) = doc.rendered_view() else {
+        return false;
+    };
+    let Some(src) = view.lines.get(line).and_then(|rendered| rendered.image.as_deref()) else {
+        return false;
+    };
+    crate::ghostty::png_file(doc.path.as_deref(), src).is_some()
+}
+
 fn row_count(doc: &Document, line: usize, width: usize, view: Option<&crate::markdown::MdView>) -> usize {
     if width == 0 {
         return 1;
     }
     if let Some(view) = view.filter(|_| !doc.is_raw_line(line)) {
         if let Some(rendered) = view.lines.get(line) {
+            if doc.shows_graphics() {
+                if let Some(src) = rendered.image.as_deref() {
+                    if crate::ghostty::png_file(doc.path.as_deref(), src).is_some() {
+                        return crate::ghostty::IMAGE_ROWS;
+                    }
+                }
+            }
             if rendered.nowrap {
                 return 1;
             }
@@ -620,6 +678,9 @@ pub fn editor_rect_for(area: Rect, mode: Mode) -> Rect {
 /// click falls outside a real line of the active document.
 pub fn mouse_to_doc(editor_area: Rect, mx: u16, my: u16, doc: &Document) -> Option<(usize, usize)> {
     let hit = locate(editor_area, mx, my, doc)?;
+    if image_line(doc, hit.line) {
+        return Some((hit.line, 0));
+    }
     let len = doc.lines[hit.line].chars().count();
     let col = match display_col(doc, &hit) {
         Some((rendered, pad, dcol)) => rendered.display_to_source(dcol.saturating_sub(pad), len),
@@ -725,6 +786,9 @@ fn render_status_bar(frame: &mut Frame, state: &EditorState, area: Rect) {
         Span::styled(format!(" {} ", state.mode_str().to_lowercase()), theme::block(mode_color)),
         Span::styled(format!(" {}", doc.name), theme::text()),
     ];
+    if doc.json_viewing() {
+        spans.push(Span::styled(" pretty", theme::dim()));
+    }
     if doc.dirty {
         spans.push(Span::styled(" ●", Style::default().fg(theme::pal().amber)));
     }
@@ -785,12 +849,12 @@ fn selection_length(lines: &[String], start: (usize, usize), end: (usize, usize)
 const LOGO: [&str; 4] = ["▄▀▀▀▀▄  ▄▀▀▀▀▄", "█▄▄▄▄█  █▄▄▄▄█", "█       █     ", "▀▄▄▄▄▀  ▀▄▄▄▄▀"];
 
 pub fn modal_rect(area: Rect, state: &EditorState) -> Option<Rect> {
-    if state.reload.is_none() && state.update.is_none() {
-        return None;
+    if state.reload.is_some() || state.update.is_some() {
+        let width = 54.min(area.width);
+        let height = 14.min(area.height);
+        return (width > 0 && height > 0).then(|| Rect::new(area.x + (area.width - width) / 2, area.y + (area.height - height) / 2, width, height));
     }
-    let width = 54.min(area.width);
-    let height = 14.min(area.height);
-    (width > 0 && height > 0).then(|| Rect::new(area.x + (area.width - width) / 2, area.y + (area.height - height) / 2, width, height))
+    context_chip(area, state).map(|chip| chip.cover())
 }
 
 fn render_reload_modal(frame: &mut Frame, state: &EditorState, area: Rect) {
@@ -832,6 +896,82 @@ fn render_reload_modal(frame: &mut Frame, state: &EditorState, area: Rect) {
     }
     let hints = Rect::new(inner.x + 1, inner.y + inner.height - 1, inner.width.saturating_sub(2), 1);
     crate::hud::hints(frame.buffer_mut(), hints, &[("↑↓", "choose"), ("Enter", "confirm"), ("Esc", "keep editing")]);
+}
+
+const CONTEXT_BAND: &str = "╱╱╱╱╱╱";
+const CONTEXT_ACTION: &str = "view prettified";
+
+pub struct ContextChip {
+    pub band: Rect,
+    pub action: Rect,
+    pub dismiss: Rect,
+}
+
+impl ContextChip {
+    fn cover(&self) -> Rect {
+        Rect::new(self.action.x, self.band.y, self.action.width + self.dismiss.width, self.dismiss.bottom() - self.band.y)
+    }
+}
+
+pub fn context_chip(area: Rect, state: &EditorState) -> Option<ContextChip> {
+    let prompt = state.json.as_ref()?;
+    if state.reload.is_some() || state.update.is_some() || state.picker.is_some() {
+        return None;
+    }
+    if state.tabs.get(state.active).map(|doc| doc.id) != Some(prompt.id) {
+        return None;
+    }
+    let action_w = CONTEXT_ACTION.chars().count() as u16 + 2;
+    let dismiss_w = 3;
+    let button_w = action_w + dismiss_w;
+    if area.height < 2 || area.width < button_w {
+        return None;
+    }
+    let x = area.x + area.width - button_w;
+    let band_w = CONTEXT_BAND.chars().count() as u16;
+    Some(ContextChip {
+        band: Rect::new(area.x + area.width - band_w, area.y, band_w, 1),
+        action: Rect::new(x, area.y + 1, action_w, 1),
+        dismiss: Rect::new(x + action_w, area.y + 1, dismiss_w, 1),
+    })
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ContextHit {
+    Action,
+    Dismiss,
+}
+
+pub fn context_chip_hit(area: Rect, state: &EditorState, column: u16, row: u16) -> Option<ContextHit> {
+    let chip = context_chip(area, state)?;
+    let pos = Position::new(column, row);
+    if chip.dismiss.contains(pos) {
+        Some(ContextHit::Dismiss)
+    } else if chip.action.contains(pos) {
+        Some(ContextHit::Action)
+    } else {
+        None
+    }
+}
+
+fn overlaps(cover: Option<Rect>, place: Rect) -> bool {
+    let Some(cover) = cover else {
+        return false;
+    };
+    place.x < cover.right() && cover.x < place.right() && place.y < cover.bottom() && cover.y < place.bottom()
+}
+
+fn render_context_chip(frame: &mut Frame, state: &EditorState, area: Rect) {
+    let Some(chip) = context_chip(area, state) else {
+        return;
+    };
+    let p = theme::pal();
+    let band = Style::default().fg(p.amber).bg(p.void).add_modifier(Modifier::BOLD);
+    frame.render_widget(Paragraph::new(CONTEXT_BAND).style(band), chip.band);
+    let action = Style::default().fg(p.hot).bg(p.keycap).add_modifier(Modifier::BOLD);
+    let dismiss = Style::default().fg(p.text).bg(p.keycap);
+    frame.render_widget(Paragraph::new(format!(" {CONTEXT_ACTION} ")).style(action), chip.action);
+    frame.render_widget(Paragraph::new(" × ").style(dismiss), chip.dismiss);
 }
 
 fn render_update_modal(frame: &mut Frame, state: &EditorState, area: Rect) {
@@ -876,6 +1016,10 @@ mod tests {
     use ratatui::layout::{Position, Rect};
     use ratatui::style::{Color, Modifier};
     use ratatui::{Terminal, buffer::Buffer};
+
+    const PNG_1X1: &[u8] = &[
+        0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D, 0x49, 0x48, 0x44, 0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x02, 0x00, 0x00, 0x00, 0x90, 0x77, 0x53, 0xDE, 0x00, 0x00, 0x00, 0x0C, 0x49, 0x44, 0x41, 0x54, 0x08, 0xD7, 0x63, 0xF8, 0xCF, 0xC0, 0x00, 0x00, 0x00, 0x03, 0x00, 0x01, 0x18, 0xDD, 0x8D, 0xB4, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4E, 0x44, 0xAE, 0x42, 0x60, 0x82,
+    ];
 
     #[test]
     fn scrolling_up_after_reaching_the_bottom_keeps_the_view_until_the_top_row() {
@@ -1628,6 +1772,144 @@ xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx";
         let rows = render_rows(draw(&state, 80, 24).backend().buffer());
         assert!(rows.iter().any(|row| row.contains("notes.txt was deleted on disk.")));
         assert!(!rows.iter().any(|row| row.contains("discards")));
+    }
+
+    #[test]
+    fn the_json_offer_sits_at_the_top_right_with_the_hazard_band_above_it() {
+        let mut state = EditorState::new();
+        state.tabs[0].name = "data.json".into();
+        state.tabs[0].lines = vec!["{\"a\":1}".into()];
+        let area = Rect::new(0, 0, 80, 24);
+        let plain = render_rows(draw(&state, area.width, area.height).backend().buffer());
+        assert!(!plain[0].contains('╱'), "no hazard band without a contextual action: {:?}", plain[0]);
+
+        state.json = Some(crate::state::JsonPrompt { id: state.tabs[0].id });
+        let term = draw(&state, area.width, area.height);
+        let buf = term.backend().buffer();
+        let rows = render_rows(buf);
+        assert!(!rows.iter().any(|row| row.contains("packed onto") || row.contains("Keep saved")), "the center modal is gone: {rows:?}");
+        let band = rows.iter().position(|row| row.contains("╱╱╱╱╱╱")).unwrap();
+        let button = rows.iter().position(|row| row.contains("view prettified")).unwrap();
+        assert_eq!(button, band + 1, "the band sits on the row above the button: {:?}", rows);
+        assert_eq!(band, 0, "the band is the top row");
+        let column = |row: &str, at: usize| row[..at].chars().count();
+        let slash_at = column(&rows[band], rows[band].rfind('╱').unwrap());
+        let band_at = column(&rows[band], rows[band].find('╱').unwrap());
+        let action_at = column(&rows[button], rows[button].find("view prettified").unwrap());
+        let dismiss_at = column(&rows[button], rows[button].rfind('×').unwrap());
+        assert!(action_at < band_at && band_at <= dismiss_at && slash_at + 1 == area.width as usize, "the band sits above the right side of the button");
+        assert!(rows[0].starts_with(" ee "), "the tabs stay: {:?}", rows[0]);
+        let slash = buf.cell((slash_at as u16, band as u16)).unwrap();
+        assert_eq!(slash.fg, theme::pal().amber);
+        assert!(slash.modifier.contains(Modifier::BOLD));
+        assert_eq!(context_chip_hit(area, &state, action_at as u16, button as u16), Some(ContextHit::Action));
+        assert_eq!(context_chip_hit(area, &state, dismiss_at as u16, button as u16), Some(ContextHit::Dismiss));
+        assert_eq!(context_chip_hit(area, &state, 1, 1), None, "the editor itself is not the button");
+        assert!(!rows.last().unwrap().contains(" pretty"));
+        assert_eq!(modal_rect(area, &state).map(|rect| rect.y), Some(0), "the open effect targets the corner");
+
+        state.reload = Some(crate::state::ReloadPrompt { id: state.tabs[0].id, choice: 0, deleted: false });
+        let covered = render_rows(draw(&state, area.width, area.height).backend().buffer());
+        assert!(!covered.iter().any(|row| row.contains("view prettified")), "the reload modal takes the corner");
+        assert!(covered.iter().any(|row| row.contains("╱╱╱╱╱╱")));
+        state.reload = None;
+
+        let narrow = render_rows(draw(&state, 19, 8).backend().buffer());
+        assert!(!narrow.iter().any(|row| row.contains("view prettified") || row.contains('╱')));
+
+        state.json = None;
+        assert!(state.tabs[0].show_pretty_json());
+        let rows = render_rows(draw(&state, area.width, area.height).backend().buffer());
+        assert!(!rows[0].contains('╱') && !rows.iter().any(|row| row.contains("view prettified")));
+        assert!(rows.last().unwrap().contains(" pretty"), "{:?}", rows.last());
+    }
+
+    #[test]
+    fn a_local_png_in_markdown_takes_a_band_only_when_graphics_can_show_it() {
+        let dir = std::env::temp_dir().join(format!("ee-img-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("pic.png"), PNG_1X1).unwrap();
+        let doc_path = dir.join("note.md");
+
+        let mut state = EditorState::new();
+        state.tabs[0] = Document::with_content("note.md", "![cat](pic.png)\nnext");
+        state.tabs[0].path = Some(doc_path.to_string_lossy().into_owned());
+        state.tabs[0].cursor = (1, 0);
+        let area = Rect::new(0, 0, 40, 16);
+        let editor = editor_rect_for(area, Mode::Normal);
+        let rows = render_rows(draw(&state, area.width, area.height).backend().buffer());
+        let cat = rows.iter().position(|row| row.contains("cat")).unwrap();
+        let next = rows.iter().position(|row| row.contains("next")).unwrap();
+        assert_eq!(next, cat + 1, "graphics off stays one row: {:?}", rows);
+        assert!(state.tabs[0].take_images().is_empty());
+
+        state.tabs[0].set_graphics(true);
+        let term = draw(&state, area.width, area.height);
+        let buf = term.backend().buffer();
+        let rows = render_rows(buf);
+        let pic = rows.iter().position(|row| row.contains("pic.png")).unwrap();
+        let next = rows.iter().position(|row| row.contains("next")).unwrap();
+        assert_eq!(next, pic + crate::ghostty::IMAGE_ROWS, "the picture has room: {:?}", rows);
+        let x = rows[pic].find("pic.png").unwrap() as u16;
+        let cell = buf.cell((x, pic as u16)).unwrap();
+        assert_eq!(cell.fg, theme::pal().ghost);
+        assert!(cell.modifier.contains(Modifier::ITALIC));
+        assert_eq!(mouse_to_doc(editor, x, (pic + 3) as u16, &state.tabs[0]), Some((0, 0)));
+        let places = state.tabs[0].take_images();
+        assert_eq!(places.len(), 1);
+        assert_eq!((places[0].rows as usize, places[0].y), (crate::ghostty::IMAGE_ROWS, pic as u16));
+        assert!(places[0].cols > 0 && places[0].path.ends_with("pic.png"));
+
+        state.reload = Some(crate::state::ReloadPrompt { id: state.tabs[0].id, choice: 0, deleted: false });
+        draw(&state, area.width, area.height);
+        assert!(state.tabs[0].take_images().is_empty(), "an image must not cover the modal");
+        state.reload = None;
+
+        state.json = Some(crate::state::JsonPrompt { id: state.tabs[0].id });
+        draw(&state, area.width, area.height);
+        assert!(state.tabs[0].take_images().is_empty(), "an image must not cover the corner button");
+        state.json = None;
+
+        draw(&state, 40, 7);
+        assert!(state.tabs[0].take_images().is_empty(), "a band that does not fit is not placed");
+
+        state.tabs[0].cursor = (0, 0);
+        let rows = render_rows(draw(&state, area.width, area.height).backend().buffer());
+        let raw = rows.iter().position(|row| row.contains("![cat]")).unwrap();
+        let next = rows.iter().position(|row| row.contains("next")).unwrap();
+        assert_eq!(next, raw + 1, "the caret line stays the source: {:?}", rows);
+
+        for source in ["![cat](https://example.com/a.png)\nnext", "![cat](missing.png)\nnext", "<img src=\"pic.svg\" alt=\"cat\">\nnext"] {
+            state.tabs[0] = Document::with_content("note.md", source);
+            state.tabs[0].path = Some(doc_path.to_string_lossy().into_owned());
+            state.tabs[0].set_graphics(true);
+            state.tabs[0].cursor = (1, 0);
+            let rows = render_rows(draw(&state, area.width, area.height).backend().buffer());
+            let cat = rows.iter().position(|row| row.contains("cat")).unwrap();
+            let next = rows.iter().position(|row| row.contains("next")).unwrap();
+            assert_eq!(next, cat + 1, "{source}: {:?}", rows);
+        }
+
+        state.tabs[0] = Document::with_content("note.md", "<img src=\"pic.png\" alt=\"cat\">\nnext");
+        state.tabs[0].path = Some(doc_path.to_string_lossy().into_owned());
+        state.tabs[0].set_graphics(true);
+        state.tabs[0].cursor = (1, 0);
+        let rows = render_rows(draw(&state, area.width, area.height).backend().buffer());
+        let pic = rows.iter().position(|row| row.contains("pic.png")).unwrap();
+        let next = rows.iter().position(|row| row.contains("next")).unwrap();
+        assert_eq!(next, pic + crate::ghostty::IMAGE_ROWS, "an html png uses the same band: {:?}", rows);
+
+        state.tabs[0] = Document::with_content("note.md", "| a |\n|---|\n| ![x](pic.png) |\n\nz");
+        state.tabs[0].path = Some(doc_path.to_string_lossy().into_owned());
+        state.tabs[0].set_graphics(true);
+        state.tabs[0].cursor = (4, 0);
+        let rows = render_rows(draw(&state, area.width, area.height).backend().buffer());
+        let bars: Vec<usize> = rows.iter().enumerate().filter(|(_, row)| row.contains('│') || row.contains('╞')).map(|(i, _)| i).collect();
+        assert_eq!(bars.len(), 3, "{:?}", rows);
+        assert_eq!(bars[2] - bars[0], 2, "a table stays one row per source line: {:?}", rows);
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

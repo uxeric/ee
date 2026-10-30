@@ -127,6 +127,11 @@ pub struct Document {
     rev: u64,
     markdown: RefCell<Option<(u64, crate::theme::Palette, Rc<MdView>)>>,
     rust_plain: Cell<bool>,
+    json_saved: Option<String>,
+    json_checked: Cell<bool>,
+    json_declined: Cell<bool>,
+    graphics: Cell<bool>,
+    image_places: RefCell<Vec<crate::ghostty::Place>>,
     rust_preview: RefCell<Option<(u64, crate::theme::Palette, Rc<MdView>)>>,
     syntax: RefCell<Option<(u64, crate::syntax::Lang, crate::syntax::Highlighter)>>,
     syntax_over: Cell<bool>,
@@ -157,6 +162,11 @@ impl Document {
             rev: 0,
             markdown: RefCell::new(None),
             rust_plain: Cell::new(true),
+            json_saved: None,
+            json_checked: Cell::new(false),
+            json_declined: Cell::new(false),
+            graphics: Cell::new(false),
+            image_places: RefCell::new(Vec::new()),
             rust_preview: RefCell::new(None),
             syntax: RefCell::new(None),
             syntax_over: Cell::new(false),
@@ -188,6 +198,11 @@ impl Document {
             rev: 0,
             markdown: RefCell::new(None),
             rust_plain: Cell::new(true),
+            json_saved: None,
+            json_checked: Cell::new(false),
+            json_declined: Cell::new(false),
+            graphics: Cell::new(false),
+            image_places: RefCell::new(Vec::new()),
             rust_preview: RefCell::new(None),
             syntax: RefCell::new(None),
             syntax_over: Cell::new(false),
@@ -253,6 +268,7 @@ impl Document {
             session.note_edit(self.rev, self.dirty);
             session.realign(&self.lines);
         }
+        self.json_saved = None;
         self.rev += 1;
         self.dirty = true;
         self.undo.push(self.capture());
@@ -1379,6 +1395,98 @@ impl Document {
         matches!(file.to_ascii_lowercase().rsplit_once('.'), Some((stem, "rs")) if !stem.is_empty())
     }
 
+    pub fn is_json(&self) -> bool {
+        let name = self.path.as_deref().unwrap_or(&self.name);
+        let file = std::path::Path::new(name).file_name().and_then(|n| n.to_str()).unwrap_or(name);
+        matches!(file.to_ascii_lowercase().rsplit_once('.'), Some((stem, "json")) if !stem.is_empty())
+    }
+
+    pub fn json_viewing(&self) -> bool {
+        self.json_saved.is_some()
+    }
+
+    pub(crate) fn json_offer_closed(&self) -> bool {
+        self.json_checked.get() || self.json_declined.get()
+    }
+
+    pub(crate) fn close_json_offer(&self) {
+        self.json_checked.set(true);
+    }
+
+    pub(crate) fn decline_json(&self) {
+        self.json_checked.set(true);
+        self.json_declined.set(true);
+    }
+
+    pub(crate) fn reset_json_offer(&mut self) {
+        self.json_saved = None;
+        self.json_checked.set(false);
+        self.json_declined.set(false);
+    }
+
+    /// Replace the buffer with the pretty form and remember the saved bytes.
+    /// The file stays clean until an edit, which drops the remembered text.
+    pub fn show_pretty_json(&mut self) -> bool {
+        if self.json_saved.is_some() {
+            return true;
+        }
+        let Some(pretty) = crate::json_view::pretty_lines(&self.lines) else {
+            return false;
+        };
+        self.json_saved = Some(self.full_content());
+        self.lines = pretty;
+        self.cursor = (0, 0);
+        self.selection = None;
+        self.extra_carets.clear();
+        self.occurrences.clear();
+        self.expansions.clear();
+        self.expanded_to = None;
+        self.rev += 1;
+        true
+    }
+
+    /// Put the saved bytes back. An edit has already committed the view.
+    pub fn show_saved_json(&mut self) -> bool {
+        if self.dirty {
+            return false;
+        }
+        let Some(saved) = self.json_saved.take() else {
+            return false;
+        };
+        self.lines = saved.split('\n').map(str::to_string).collect();
+        if self.lines.is_empty() {
+            self.lines.push(String::new());
+        }
+        self.cursor = (0, 0);
+        self.selection = None;
+        self.extra_carets.clear();
+        self.occurrences.clear();
+        self.expansions.clear();
+        self.expanded_to = None;
+        self.rev += 1;
+        true
+    }
+
+    pub fn set_graphics(&self, on: bool) {
+        self.graphics.set(on);
+    }
+
+    pub fn shows_graphics(&self) -> bool {
+        self.graphics.get()
+    }
+
+    pub fn clear_images(&self) {
+        self.image_places.borrow_mut().clear();
+    }
+
+    pub fn note_image(&self, place: crate::ghostty::Place) {
+        self.image_places.borrow_mut().push(place);
+    }
+
+    pub fn take_images(&self) -> Vec<crate::ghostty::Place> {
+        self.image_places.borrow_mut().drain(..).collect()
+    }
+
     pub fn toggle_rust_view(&mut self) -> bool {
         let on = !self.rust_plain.get();
         self.rust_plain.set(on);
@@ -1846,7 +1954,8 @@ impl Document {
     /// Write `path`. A `.docx` path saves the package; anything else saves the lines as text.
     pub fn write_to(&mut self, path: &str) -> std::io::Result<Option<String>> {
         let note = if !crate::docx::is_path(path) {
-            std::fs::write(path, self.full_content().as_bytes())?;
+            let text = self.json_saved.clone().unwrap_or_else(|| self.full_content());
+            std::fs::write(path, text.as_bytes())?;
             self.docx = None;
             None
         } else {
@@ -1905,6 +2014,7 @@ impl Document {
         self.dirty = false;
         self.clamp_carets();
         self.disk = fresh.disk;
+        self.reset_json_offer();
         Ok(())
     }
 }

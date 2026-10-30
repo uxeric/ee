@@ -79,6 +79,7 @@ pub enum Action {
     ToggleCase,
     ToggleComment,
     ToggleRustView,
+    ToggleJsonView,
     FindAction,
     FileStructure,
     LastEditLocation,
@@ -181,6 +182,7 @@ pub const PALETTE: &[(&str, &str, &str)] = &[
     ("toggle_case", "Toggle case", "Ctrl+Shift+U"),
     ("toggle_comment", "Toggle line comment", "Ctrl+/"),
     ("toggle_rust_view", "Rust beautifier", "Alt+Shift+B"),
+    ("toggle_json_view", "JSON pretty view", "Alt+Shift+P"),
     ("indent", "Indent", "Tab"),
     ("unindent", "Unindent", "Shift+Tab"),
     ("start_new_line", "Start new line below", "Shift+Enter"),
@@ -273,6 +275,7 @@ impl Action {
             "toggle_case" => Action::ToggleCase,
             "toggle_comment" => Action::ToggleComment,
             "toggle_rust_view" => Action::ToggleRustView,
+            "toggle_json_view" => Action::ToggleJsonView,
             "find_action" => Action::FindAction,
             "file_structure" => Action::FileStructure,
             "last_edit_location" => Action::LastEditLocation,
@@ -395,6 +398,8 @@ impl Keymap {
                     Some(Action::ShrinkSelection)
                 } else if alt && c == 'B' {
                     Some(Action::ToggleRustView)
+                } else if alt && c == 'P' {
+                    Some(Action::ToggleJsonView)
                 } else if alt {
                     if self.config.fallback_enabled {
                         // Alt+Y is the "Ctrl+Shift+Y" proxy; redo is no longer
@@ -784,6 +789,8 @@ mod tests {
             (event(KeyCode::F(12), true, false, false), Action::FileStructure),
             (event(KeyCode::Char('A'), true, false, true), Action::FindAction),
             (event(KeyCode::Char('A'), false, true, true), Action::FindAction),
+            (event(KeyCode::Char('P'), false, true, true), Action::ToggleJsonView),
+            (event(KeyCode::Char('p'), false, true, true), Action::ToggleJsonView),
             (event(KeyCode::Char('N'), true, false, true), Action::OpenFile),
         ];
         for (ev, expected) in cases {

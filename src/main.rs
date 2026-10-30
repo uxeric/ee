@@ -3,9 +3,11 @@ mod config;
 mod docx;
 mod document;
 mod find;
+mod ghostty;
 mod herdr;
 mod hud;
 mod hyprland;
+mod json_view;
 mod keys;
 mod markdown;
 mod motion;
@@ -19,7 +21,7 @@ mod ui;
 mod wrap;
 
 use std::env;
-use std::io::{stdout, Stdout};
+use std::io::{stdout, Stdout, Write};
 use std::time::{Duration, Instant};
 
 use ratatui::crossterm::event::{
@@ -93,6 +95,12 @@ fn main() -> std::io::Result<()> {
             state.note_new_file(&name);
         }
     }
+    state.set_graphics(ghostty::detect(
+        &env::var("TERM").unwrap_or_default(),
+        &env::var("TERM_PROGRAM").unwrap_or_default(),
+        env::var_os("HERDR_ENV").is_some(),
+    ));
+    state.consider_json_offer();
 
     let backend = CrosstermBackend::new(stdout());
     let mut terminal = Terminal::new(backend)?;
@@ -127,6 +135,20 @@ fn main() -> std::io::Result<()> {
         std::process::exit(code);
     }
     Ok(())
+}
+
+fn take_context_click(state: &mut EditorState, area: Rect, column: u16, row: u16) -> bool {
+    match ui::context_chip_hit(area, state, column, row) {
+        Some(ui::ContextHit::Dismiss) => {
+            state.dismiss_json_offer();
+            true
+        }
+        Some(ui::ContextHit::Action) => {
+            state.accept_json_offer();
+            true
+        }
+        None => false,
+    }
 }
 
 fn context_mouse(state: &mut EditorState, area: Rect, kind: MouseEventKind, column: u16, row: u16) -> bool {
@@ -210,6 +232,13 @@ fn run(terminal: &mut Terminal<CrosstermBackend<Stdout>>, state: &mut EditorStat
     let mut double_shift = DoubleShift::default();
     let mut motion = Motion::from_env();
     motion.jack_in(&ui::areas(screen(terminal)?, state));
+    if state.json.is_some() {
+        let areas = ui::areas(screen(terminal)?, state);
+        for cue in state.take_cues() {
+            motion.cue(cue, &areas);
+        }
+    }
+    let mut images = ImageLayer::default();
     let mut last_click: Option<(Instant, (usize, usize), u8)> = None;
     let mut quitting = false;
     let mut update_check = update::spawn_check();
@@ -239,6 +268,7 @@ fn run(terminal: &mut Terminal<CrosstermBackend<Stdout>>, state: &mut EditorStat
             let area = f.area();
             motion.render(f.buffer_mut(), area);
         })?;
+        paint_images(state, &mut images, was_animating)?;
         if was_animating && !motion.is_animating() && !quitting {
             continue;
         }
@@ -286,6 +316,12 @@ fn run(terminal: &mut Terminal<CrosstermBackend<Stdout>>, state: &mut EditorStat
                     Some(action) => state.apply(action),
                     None => true,
                 }
+            }
+            Event::Mouse(mouse)
+                if mouse.kind == MouseEventKind::Down(MouseButton::Left)
+                    && take_context_click(state, area, mouse.column, mouse.row) =>
+            {
+                true
             }
             Event::Mouse(_) | Event::Paste(_) if state.reload.is_some() => true,
             Event::Mouse(mouse) if context_mouse(state, area, mouse.kind, mouse.column, mouse.row) => true,
@@ -374,6 +410,50 @@ fn run(terminal: &mut Terminal<CrosstermBackend<Stdout>>, state: &mut EditorStat
             motion.cue(Cue::Quit, &areas);
         }
     }
+}
+
+#[derive(Default)]
+struct ImageLayer {
+    ever: bool,
+    showing: bool,
+}
+
+impl Drop for ImageLayer {
+    fn drop(&mut self) {
+        if self.ever {
+            let mut out = stdout();
+            let _ = out.write_all(ghostty::clear_command().as_bytes());
+            let _ = out.flush();
+        }
+    }
+}
+
+fn paint_images(state: &EditorState, layer: &mut ImageLayer, animating: bool) -> std::io::Result<()> {
+    if animating {
+        if layer.showing {
+            write_graphics(ghostty::clear_command())?;
+            layer.showing = false;
+        }
+        return Ok(());
+    }
+    let places = state.tabs[state.active].take_images();
+    if places.is_empty() {
+        if layer.showing {
+            write_graphics(ghostty::clear_command())?;
+            layer.showing = false;
+        }
+    } else {
+        write_graphics(&ghostty::show_command(&places))?;
+        layer.showing = true;
+        layer.ever = true;
+    }
+    Ok(())
+}
+
+fn write_graphics(seq: &str) -> std::io::Result<()> {
+    let mut out = stdout();
+    out.write_all(seq.as_bytes())?;
+    out.flush()
 }
 
 #[cfg(test)]

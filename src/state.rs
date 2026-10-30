@@ -126,6 +126,10 @@ pub struct ReloadPrompt {
     pub deleted: bool,
 }
 
+pub struct JsonPrompt {
+    pub id: u64,
+}
+
 pub struct EditorState {
     pub tabs: Vec<Document>,
     pub active: usize,
@@ -144,6 +148,8 @@ pub struct EditorState {
     drag_anchor: Option<(usize, usize)>,
     pub update: Option<(String, String)>,
     pub reload: Option<ReloadPrompt>,
+    pub json: Option<JsonPrompt>,
+    graphics: bool,
     pub menu: Option<Menu>,
     pub restart_for_update: bool,
     pub page_rows: usize,
@@ -182,6 +188,8 @@ impl EditorState {
             drag_anchor: None,
             update: None,
             reload: None,
+            json: None,
+            graphics: false,
             menu: None,
             restart_for_update: false,
             page_rows: 1,
@@ -240,6 +248,10 @@ impl EditorState {
         if self.update.is_some() {
             return self.apply_update_offer(action, pending);
         }
+        if action == Action::ClearExtraCaret && matches!(self.mode, Mode::Normal) && self.json_offer_on_active() {
+            self.dismiss_json_offer();
+            return true;
+        }
         if action == Action::FindAction {
             self.open_picker(PickerKind::Actions);
             return true;
@@ -272,6 +284,11 @@ impl EditorState {
                 if doc.rev() != before.1 {
                     self.last_edit = Some((doc.id, doc.cursor));
                 }
+            }
+        }
+        if self.json.as_ref().is_some_and(|prompt| prompt.id == before.0) {
+            if self.tabs.get(self.active).is_some_and(|doc| doc.id == before.0 && doc.rev() != before.1) {
+                self.json = None;
             }
         }
         keep
@@ -437,6 +454,19 @@ impl EditorState {
                     self.status = "rust beautifier on".to_string();
                 } else {
                     self.status = "rust beautifier off".to_string();
+                }
+            }
+            Action::ToggleJsonView => {
+                let doc = &mut self.tabs[self.active];
+                if !doc.is_json() {
+                    self.warn("json pretty view is for .json files".to_string());
+                } else if doc.json_viewing() && !doc.dirty {
+                    doc.show_saved_json();
+                    self.status = "saved json text".to_string();
+                } else if doc.show_pretty_json() {
+                    self.status = "json pretty view".to_string();
+                } else {
+                    self.status = "already prettified".to_string();
                 }
             }
             Action::LastEditLocation => match self.last_edit {
@@ -674,13 +704,80 @@ impl EditorState {
         };
         let name = self.tabs[i].name.clone();
         match self.tabs[i].reload_from_disk() {
-            Ok(()) => self.status = format!("reloaded {name}"),
+            Ok(()) => {
+                self.status = format!("reloaded {name}");
+                self.consider_json_offer();
+            }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
                 self.tabs[i].note_disk();
                 self.tabs[i].dirty = true;
                 self.fail(format!("{name} is no longer on disk"));
             }
             Err(e) => self.fail(format!("cannot reload {name}: {}", plain(&e))),
+        }
+    }
+
+    fn json_offer_on_active(&self) -> bool {
+        self.json.as_ref().is_some_and(|prompt| self.tabs.get(self.active).is_some_and(|doc| doc.id == prompt.id))
+    }
+
+    pub fn dismiss_json_offer(&mut self) {
+        self.alert = None;
+        self.keep_saved_json();
+    }
+
+    pub fn accept_json_offer(&mut self) {
+        let Some(prompt) = self.json.take() else {
+            return;
+        };
+        if self.tabs.get(self.active).map(|doc| doc.id) != Some(prompt.id) {
+            self.json = Some(prompt);
+            return;
+        }
+        self.alert = None;
+        if self.tabs[self.active].show_pretty_json() {
+            self.status = "viewing prettified json".to_string();
+        }
+    }
+
+    fn keep_saved_json(&mut self) {
+        let Some(prompt) = self.json.take() else {
+            return;
+        };
+        if let Some(doc) = self.tabs.iter_mut().find(|doc| doc.id == prompt.id) {
+            doc.decline_json();
+            let name = doc.name.clone();
+            self.status = format!("keeping the saved text of {name}");
+        }
+    }
+
+    pub fn set_graphics(&mut self, on: bool) {
+        self.graphics = on;
+        for doc in &mut self.tabs {
+            doc.set_graphics(on);
+        }
+    }
+
+    pub fn consider_json_offer(&mut self) {
+        if self.reload.is_some() || self.update.is_some() || self.json.is_some() {
+            return;
+        }
+        let id = self.tabs[self.active].id;
+        let offer = {
+            let doc = &self.tabs[self.active];
+            if doc.json_offer_closed() {
+                return;
+            }
+            let offer = doc.is_json()
+                && !doc.json_viewing()
+                && !crate::syntax::too_large(&doc.lines)
+                && crate::json_view::pretty_lines(&doc.lines).is_some();
+            doc.close_json_offer();
+            offer
+        };
+        if offer {
+            self.json = Some(JsonPrompt { id });
+            self.cues.push(Cue::ReloadOffered);
         }
     }
 
@@ -961,6 +1058,7 @@ impl EditorState {
         }
         match Document::open_or_new(path) {
             Ok((doc, is_new)) => {
+                doc.set_graphics(self.graphics);
                 self.cues.push(Cue::Opened);
                 if is_new {
                     self.note_new_file(&doc.name);
@@ -973,6 +1071,7 @@ impl EditorState {
                     self.tabs.push(doc);
                     self.active = self.tabs.len() - 1;
                 }
+                self.consider_json_offer();
             }
             Err(e) => self.fail(format!("cannot open {}: {}", path, plain(&e))),
         }
@@ -2514,5 +2613,124 @@ mod tests {
         assert_eq!(state.status, "rust beautifier is for .rs files");
         assert!(state.tabs[0].rendered_view().is_none());
         assert_eq!(state.tabs[0].lines[0], "fn main() -> i32 { 1 }");
+    }
+
+    #[test]
+    fn a_packed_json_file_can_be_viewed_prettified_without_changing_the_saved_bytes() {
+        let dir = Scratch::new("json-pretty");
+        let raw = "{\"a\":1,\"b\":[2,3]}\n";
+        let path = dir.write("data.json", raw);
+        let mut state = EditorState::new();
+        state.open_path(&path);
+        assert!(state.json.is_some());
+        assert!(!state.tabs[0].dirty);
+        assert_eq!(state.tabs[0].lines[0], "{\"a\":1,\"b\":[2,3]}");
+        state.apply(Action::OpenMenu { line: 0, col: 0, x: 2, y: 2 });
+        assert!(state.menu.is_some() && state.json.is_some(), "the offer leaves the menu usable");
+        state.apply(Action::ClearExtraCaret);
+        assert!(state.menu.is_none() && state.json.is_some(), "esc closes the menu and leaves the offer");
+        rewrite(&path, raw);
+        state.look_for_disk_changes();
+        assert!(state.reload.is_some() && state.json.is_some(), "a disk change still asks while the offer is up");
+        state.apply(Action::ClearExtraCaret);
+        assert!(state.reload.is_none() && state.json.is_some(), "keeping the open version leaves the offer");
+
+        state.accept_json_offer();
+        assert!(state.json.is_none());
+        assert!(state.tabs[0].lines.len() > 2);
+        assert!(!state.tabs[0].dirty);
+        assert!(state.tabs[0].json_viewing());
+        assert_eq!(state.status, "viewing prettified json");
+        state.apply(Action::SaveAll);
+        assert_eq!(fs::read_to_string(&path).unwrap(), raw);
+        assert!(state.tabs[0].json_viewing());
+
+        state.apply(Action::InsertChar('x'));
+        assert!(state.tabs[0].dirty);
+        assert!(!state.tabs[0].json_viewing());
+        state.apply(Action::SaveAll);
+        let edited = fs::read_to_string(&path).unwrap();
+        assert!(edited.contains('x') && edited != raw);
+
+        state.apply(Action::Undo);
+        assert!(state.tabs[0].dirty);
+        assert!(!state.tabs[0].json_viewing());
+        let pretty = state.tabs[0].full_content();
+        assert!(!pretty.contains('x') && pretty != raw && pretty.lines().count() > 2);
+        state.apply(Action::SaveAll);
+        assert_eq!(fs::read_to_string(&path).unwrap(), pretty);
+
+        let quit_path = dir.write("quit.json", raw);
+        let mut quitting = EditorState::new();
+        quitting.open_path(&quit_path);
+        assert!(quitting.json.is_some());
+        assert!(!quitting.apply(Action::Quit), "quit still leaves");
+
+        let typed = dir.write("typed.json", raw);
+        let mut typing = EditorState::new();
+        typing.open_path(&typed);
+        typing.apply(Action::InsertChar('Z'));
+        assert!(typing.json.is_none(), "typing drops the offer");
+        assert!(typing.tabs[0].lines[0].contains('Z'));
+        assert!(typing.tabs[0].dirty);
+    }
+
+    #[test]
+    fn a_declined_or_already_pretty_json_file_is_not_asked_again_until_reload() {
+        let dir = Scratch::new("json-quiet");
+        let pretty = format!("{}\n", serde_json::to_string_pretty(&serde_json::json!({"a": 1})).unwrap());
+        let mut state = EditorState::new();
+        state.open_path(&dir.write("pretty.json", &pretty));
+        assert!(state.json.is_none());
+        state.apply(Action::ToggleJsonView);
+        assert_eq!(state.status, "already prettified");
+
+        state.open_path(&dir.write("broken.json", "{"));
+        assert!(state.json.is_none());
+        state.apply(Action::ToggleJsonView);
+        assert_eq!(state.status, "already prettified");
+        assert_eq!(state.tabs[state.active].lines[0], "{");
+
+        state.open_path(&dir.write("notes.txt", "{\"a\":1}\n"));
+        assert!(state.json.is_none());
+        state.apply(Action::ToggleJsonView);
+        assert_eq!(state.status, "json pretty view is for .json files");
+        assert_eq!(state.tabs[state.active].lines[0], "{\"a\":1}");
+
+        let raw = "{\"a\":1}\n";
+        let path = dir.write("packed.json", raw);
+        state.open_path(&path);
+        assert!(state.json.is_some());
+        state.apply(Action::ClearExtraCaret);
+        assert!(state.json.is_none());
+        assert_eq!(state.status, "keeping the saved text of packed.json");
+        assert_eq!(fs::read_to_string(&path).unwrap(), raw);
+        assert_eq!(state.tabs[state.active].lines[0], "{\"a\":1}");
+        state.open_path(&path);
+        assert!(state.json.is_none(), "declining is remembered");
+        state.apply(Action::ToggleJsonView);
+        assert!(state.tabs[state.active].json_viewing());
+        assert!(!state.tabs[state.active].dirty);
+        assert_eq!(state.status, "json pretty view");
+        state.apply(Action::ToggleJsonView);
+        assert!(!state.tabs[state.active].json_viewing());
+        assert_eq!(state.tabs[state.active].lines[0], "{\"a\":1}");
+        assert_eq!(state.status, "saved json text");
+        state.apply(Action::ToggleJsonView);
+        state.apply(Action::InsertChar('x'));
+        state.apply(Action::ToggleJsonView);
+        assert_eq!(state.status, "already prettified");
+        assert!(state.tabs[state.active].full_content().contains('x'));
+
+        let again = dir.write("again.json", raw);
+        let mut state = EditorState::new();
+        state.open_path(&again);
+        state.apply(Action::ClearExtraCaret);
+        rewrite(&again, "{\"c\":1}\n");
+        state.look_for_disk_changes();
+        assert!(state.reload.is_some());
+        state.apply(Action::Newline);
+        assert!(state.json.is_some(), "a reload of packed json asks again");
+        assert_eq!(state.tabs[0].lines[0], "{\"c\":1}");
     }
 }
