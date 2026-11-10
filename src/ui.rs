@@ -362,26 +362,44 @@ fn render_tree(frame: &mut Frame, state: &EditorState, panel: Rect) {
     }
 }
 
-fn render_tab_bar(frame: &mut Frame, state: &EditorState, area: Rect) {
-    let mut spans: Vec<Span> = vec![Span::styled(" ee ", theme::block(theme::pal().hot)), Span::raw(" ")];
+/// The tab bar's spans, and for each tab the column of its `×` relative to the bar.
+fn tab_bar(state: &EditorState) -> (Vec<Span<'static>>, Vec<u16>) {
+    let p = theme::pal();
+    let mut spans: Vec<Span> = vec![Span::styled(" ee ", theme::block(p.hot)), Span::raw(" ")];
+    let mut closes = Vec::with_capacity(state.tabs.len());
+    let at = |spans: &[Span]| spans.iter().map(|s| s.width()).sum::<usize>() as u16;
     for (i, tab) in state.tabs.iter().enumerate() {
         if i == state.active {
-            let label = if tab.dirty {
-                format!(" {} ● ", tab.name)
-            } else {
-                format!(" {} ", tab.name)
-            };
-            spans.push(Span::styled(label, theme::block(theme::pal().ice)));
+            let label = if tab.dirty { format!(" {} ● ", tab.name) } else { format!(" {} ", tab.name) };
+            let style = theme::block(p.ice);
+            spans.push(Span::styled(label, style));
+            closes.push(at(&spans));
+            spans.push(Span::styled("× ", style));
         } else {
             spans.push(Span::styled(format!(" {}", tab.name), theme::dim()));
             if tab.dirty {
-                spans.push(Span::styled(" ●", Style::default().fg(theme::pal().amber)));
+                spans.push(Span::styled(" ●", Style::default().fg(p.amber)));
             }
             spans.push(Span::raw(" "));
+            closes.push(at(&spans));
+            spans.push(Span::styled("× ", theme::dim()));
         }
         spans.push(Span::raw(" "));
     }
-    frame.render_widget(Paragraph::new(Line::from(spans)), area);
+    (spans, closes)
+}
+
+/// The tab whose `×` sits at (`x`, `y`), when that `×` is on screen.
+pub fn tab_close_hit(area: Rect, state: &EditorState, x: u16, y: u16) -> Option<usize> {
+    if y != area.y || x < area.x {
+        return None;
+    }
+    let (_, closes) = tab_bar(state);
+    closes.iter().position(|&c| area.x.checked_add(c) == Some(x) && c < area.width)
+}
+
+fn render_tab_bar(frame: &mut Frame, state: &EditorState, area: Rect) {
+    frame.render_widget(Paragraph::new(Line::from(tab_bar(state).0)), area);
 }
 
 fn render_editor(
@@ -1562,6 +1580,28 @@ mod tests {
         let mut t = Terminal::new(TestBackend::new(w, h)).unwrap();
         t.draw(|f| render(f, state)).unwrap();
         t
+    }
+
+    #[test]
+    fn every_tab_shows_a_close_mark_that_the_mouse_can_hit() {
+        let mut state = EditorState::new();
+        state.tabs = vec![Document::with_content("a.md", "a"), Document::with_content("bb.md", "b"), Document::with_content("c.md", "c")];
+        state.tabs[0].dirty = true;
+        state.active = 1;
+        let t = draw(&state, 40, 4);
+        let buf = t.backend().buffer();
+        let bar = &render_rows(buf)[0];
+        let marks: Vec<u16> = bar.chars().enumerate().filter(|&(_, c)| c == '×').map(|(x, _)| x as u16).collect();
+        assert_eq!(marks.len(), 3, "{:?}", bar);
+        assert!(bar.starts_with(" ee   a.md ● ×   bb.md ×   c.md ×"), "{:?}", bar);
+        assert_eq!(buf.cell((marks[1], 0)).unwrap().bg, theme::pal().ice, "the active tab's × is inside its block");
+        let area = Rect::new(0, 0, 40, 4);
+        for (tab, &x) in marks.iter().enumerate() {
+            assert_eq!(tab_close_hit(area, &state, x, 0), Some(tab));
+            assert_eq!(tab_close_hit(area, &state, x, 1), None, "only the tab bar row");
+        }
+        assert_eq!(tab_close_hit(area, &state, marks[1] - 2, 0), None, "the name is not the close mark");
+        assert_eq!(tab_close_hit(Rect::new(0, 0, marks[2], 4), &state, marks[2], 0), None, "a clipped × cannot be hit");
     }
 
     #[test]

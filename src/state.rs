@@ -788,12 +788,40 @@ impl EditorState {
             self.warn("unsaved changes: close again to discard".to_string());
             return true;
         }
-        self.tabs.remove(self.active);
-        if self.tabs.is_empty() {
+        if self.tabs.len() == 1 {
+            // The quit animation still draws a frame, which needs a tab.
             return false;
         }
+        self.tabs.remove(self.active);
         self.active = self.active.min(self.tabs.len() - 1);
         self.cues.push(Cue::TabPrev);
+        true
+    }
+
+    /// A click on tab `index`'s `×`. A clean tab in the background closes and
+    /// the active tab stays; an unsaved one comes forward and asks first, like
+    /// `Ctrl+F4`. Returns false when the last tab closed.
+    pub fn close_tab_at(&mut self, index: usize) -> bool {
+        if index >= self.tabs.len() || self.reload.is_some() || self.update.is_some() || self.json.is_some() {
+            return true;
+        }
+        self.focus_editor();
+        if index == self.active {
+            return self.apply(Action::CloseTab);
+        }
+        self.pending = None;
+        if self.tabs[index].dirty {
+            self.mark_jump();
+            self.cues.push(if index > self.active { Cue::TabNext } else { Cue::TabPrev });
+            self.active = index;
+            return self.apply(Action::CloseTab);
+        }
+        self.status.clear();
+        self.alert = None;
+        self.tabs.remove(index);
+        if index < self.active {
+            self.active -= 1;
+        }
         true
     }
 
@@ -1913,6 +1941,34 @@ mod tests {
     }
 
     #[test]
+    fn clicking_a_background_close_mark_keeps_the_active_tab_and_asks_for_unsaved_ones() {
+        let mut state = state_with(&["a", "b", "c", "d"]);
+        state.active = 2;
+        state.tabs[0].dirty = true;
+
+        assert!(state.close_tab_at(1));
+        assert_eq!(state.tabs.iter().map(|d| d.lines[0].as_str()).collect::<Vec<_>>(), ["a", "c", "d"]);
+        assert_eq!(state.tabs[state.active].lines[0], "c", "a clean background tab closes in place");
+
+        assert!(state.close_tab_at(0));
+        assert_eq!(state.tabs.len(), 3);
+        assert_eq!(state.active, 0, "the unsaved tab comes forward");
+        assert!(state.status.contains("unsaved"));
+        assert!(state.close_tab_at(0));
+        assert_eq!(state.tabs.iter().map(|d| d.lines[0].as_str()).collect::<Vec<_>>(), ["c", "d"]);
+
+        state.tabs[0].dirty = true;
+        state.tabs[1].dirty = true;
+        state.close_tab_at(0);
+        assert!(state.close_tab_at(1));
+        assert_eq!((state.tabs.len(), state.active), (2, 1), "c's confirmation does not discard d");
+        state.close_tab_at(1);
+        assert_eq!(state.tabs[0].lines[0], "c");
+        assert!(state.close_tab_at(0));
+        assert!(!state.close_tab_at(0), "the last tab closing quits, like Ctrl+F4");
+    }
+
+    #[test]
     fn close_tab_confirms_unsaved_changes_and_quits_on_last_tab() {
         let mut state = state_with(&["a", "b"]);
         state.active = 1;
@@ -1931,6 +1987,8 @@ mod tests {
         assert_eq!(state.tabs[0].lines[0], "a");
 
         assert!(!state.apply(Action::CloseTab));
+        crate::ui::areas(ratatui::layout::Rect::new(0, 0, 80, 24), &state);
+        assert_eq!(state.tabs.len(), 1, "the quit animation still has a tab to draw");
     }
 
     #[test]

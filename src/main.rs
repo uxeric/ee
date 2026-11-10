@@ -374,6 +374,14 @@ fn run(terminal: &mut Terminal<CrosstermBackend<Stdout>>, state: &mut EditorStat
             Event::Mouse(mouse) if tree_mouse(state, area, mouse.kind, mouse.column, mouse.row) => true,
             Event::Mouse(mouse)
                 if mouse.kind == MouseEventKind::Down(MouseButton::Left)
+                    && matches!(state.mode, state::Mode::Normal | state::Mode::Tree)
+                    && ui::tab_close_hit(area, state, mouse.column, mouse.row).is_some() =>
+            {
+                let index = ui::tab_close_hit(area, state, mouse.column, mouse.row).unwrap_or(state.active);
+                state.close_tab_at(index)
+            }
+            Event::Mouse(mouse)
+                if mouse.kind == MouseEventKind::Down(MouseButton::Left)
                     && ui::command_button(area, state).is_some_and(|b| b.contains(ratatui::layout::Position::new(mouse.column, mouse.row))) =>
             {
                 state.apply(Action::FindAction)
