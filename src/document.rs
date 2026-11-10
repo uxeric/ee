@@ -132,10 +132,17 @@ pub struct Document {
     json_declined: Cell<bool>,
     graphics: Cell<bool>,
     image_places: RefCell<Vec<crate::ghostty::Place>>,
+    image_hot: RefCell<ImageHot>,
     rust_preview: RefCell<Option<(u64, crate::theme::Palette, Rc<MdView>)>>,
     syntax: RefCell<Option<(u64, crate::syntax::Lang, crate::syntax::Highlighter)>>,
     syntax_over: Cell<bool>,
     docx: Option<crate::docx::Session>,
+}
+
+#[derive(Default)]
+struct ImageHot {
+    labels: Vec<(u16, u16, std::path::PathBuf)>,
+    preview: Option<(u16, u16, u16, u16, std::path::PathBuf)>,
 }
 
 impl Document {
@@ -167,6 +174,7 @@ impl Document {
             json_declined: Cell::new(false),
             graphics: Cell::new(false),
             image_places: RefCell::new(Vec::new()),
+            image_hot: RefCell::new(ImageHot::default()),
             rust_preview: RefCell::new(None),
             syntax: RefCell::new(None),
             syntax_over: Cell::new(false),
@@ -203,6 +211,7 @@ impl Document {
             json_declined: Cell::new(false),
             graphics: Cell::new(false),
             image_places: RefCell::new(Vec::new()),
+            image_hot: RefCell::new(ImageHot::default()),
             rust_preview: RefCell::new(None),
             syntax: RefCell::new(None),
             syntax_over: Cell::new(false),
@@ -1485,6 +1494,23 @@ impl Document {
 
     pub fn take_images(&self) -> Vec<crate::ghostty::Place> {
         self.image_places.borrow_mut().drain(..).collect()
+    }
+
+    pub fn set_image_hot(&self, labels: &[(u16, u16, std::path::PathBuf)], preview: Option<&crate::ghostty::Place>) {
+        *self.image_hot.borrow_mut() = ImageHot {
+            labels: labels.to_vec(),
+            preview: preview.map(|place| (place.x, place.y, place.cols, place.rows, place.path.clone())),
+        };
+    }
+
+    pub fn image_hit(&self, at: Option<(u16, u16)>) -> Option<std::path::PathBuf> {
+        let (x, y) = at?;
+        let hot = self.image_hot.borrow();
+        if let Some((_, _, path)) = hot.labels.iter().find(|(lx, ly, _)| *lx == x && *ly == y) {
+            return Some(path.clone());
+        }
+        let (px, py, pw, ph, path) = hot.preview.as_ref()?;
+        (x >= *px && y >= *py && x < px.saturating_add(*pw) && y < py.saturating_add(*ph)).then(|| path.clone())
     }
 
     pub fn toggle_rust_view(&mut self) -> bool {

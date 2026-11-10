@@ -399,7 +399,7 @@ fn render_line(line: &str) -> RenderedLine {
 }
 
 fn seg(text: &str, src: std::ops::Range<usize>, style: Style, verbatim: bool, link: Option<String>) -> Seg {
-    Seg { text: text.to_string(), style, src, verbatim, link }
+    Seg { text: text.to_string(), style, src, verbatim, link, image: None }
 }
 
 fn bar(label: &str, n: usize) -> RenderedLine {

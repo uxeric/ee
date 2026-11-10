@@ -231,6 +231,7 @@ fn paint(line: &str, origin: usize, cuts: &[Range<usize>], roles: &[(Range<usize
             src: start..end,
             verbatim: true,
             link: None,
+            image: None,
         });
     }
     RenderedLine { segs, ..RenderedLine::default() }

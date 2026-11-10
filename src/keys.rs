@@ -103,6 +103,7 @@ pub enum Action {
     CloseTab,
     GoToDeclaration,
     QuickDefinition,
+    ToggleProjectView,
 }
 
 const DOUBLE_SHIFT_WINDOW: Duration = Duration::from_millis(400);
@@ -147,6 +148,7 @@ pub const PALETTE: &[(&str, &str, &str)] = &[
     ("save_all", "Save all", "Ctrl+S"),
     ("open_file", "Open or create a file", "Ctrl+N"),
     ("open_recent", "Open a recent file", "Ctrl+O"),
+    ("toggle_project_view", "Project files", "Alt+1"),
     ("rename", "Rename file / save as", "Shift+F6"),
     ("close_tab", "Close tab", "Ctrl+F4"),
     ("next_tab", "Next tab", "Ctrl+]"),
@@ -280,6 +282,7 @@ impl Action {
             "file_structure" => Action::FileStructure,
             "last_edit_location" => Action::LastEditLocation,
             "start_new_line_above" => Action::StartNewLineAbove,
+            "toggle_project_view" => Action::ToggleProjectView,
             _ => return None,
         })
     }
@@ -400,6 +403,8 @@ impl Keymap {
                     Some(Action::ToggleRustView)
                 } else if alt && c == 'P' {
                     Some(Action::ToggleJsonView)
+                } else if alt && !ctrl && c == '1' {
+                    Some(Action::ToggleProjectView)
                 } else if alt {
                     if self.config.fallback_enabled {
                         // Alt+Y is the "Ctrl+Shift+Y" proxy; redo is no longer

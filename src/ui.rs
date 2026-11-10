@@ -13,7 +13,7 @@ pub fn render(frame: &mut Frame, state: &EditorState) {
     let area = frame.area();
     let doc = &state.tabs[state.active];
 
-    let (tab_bar, editor_area, find_bar, status_bar) = layout(area, state.mode);
+    let (tab_bar, editor_area, find_bar, status_bar, panel) = layout_with(area, state.mode, panel_cols(area, state));
 
     let hits = match state.mode {
         Mode::Find | Mode::Replace => state.find_hits(),
@@ -28,7 +28,7 @@ pub fn render(frame: &mut Frame, state: &EditorState) {
     render_tab_bar(frame, state, tab_bar);
     let chip = context_chip(area, state);
     let allow_images = state.reload.is_none() && state.update.is_none() && state.picker.is_none() && state.menu.is_none();
-    render_editor(frame, doc, &highlights, matches!(state.mode, Mode::Normal | Mode::Menu), editor_area, allow_images, chip.as_ref().map(ContextChip::cover));
+    render_editor(frame, doc, &highlights, matches!(state.mode, Mode::Normal | Mode::Menu), editor_area, allow_images, chip.as_ref().map(ContextChip::cover), state.pointer);
     if let Some(fb) = find_bar {
         match state.mode {
             Mode::Find | Mode::Replace => render_find_bar(frame, state, &hits, fb),
@@ -37,6 +37,9 @@ pub fn render(frame: &mut Frame, state: &EditorState) {
         }
     }
     render_status_bar(frame, state, status_bar);
+    if let Some(panel) = panel {
+        render_tree(frame, state, panel);
+    }
     if matches!(state.mode, Mode::Picker) {
         render_picker(frame, state, area);
     }
@@ -53,7 +56,7 @@ pub fn render(frame: &mut Frame, state: &EditorState) {
 
 pub fn popup_rect(area: Rect, state: &EditorState) -> Option<Rect> {
     let picker = state.picker.as_ref()?;
-    let editor = editor_rect_for(area, state.mode);
+    let editor = editor_rect(area, state);
     let width = area.width.saturating_sub(4).min(84);
     let rows = (picker.shown.len().max(1) as u16 + 5).min(20).min(editor.height.max(3));
     Some(Rect::new(area.x + (area.width - width) / 2, editor.y + editor.height.min(1), width, rows))
@@ -151,7 +154,7 @@ fn render_picker(frame: &mut Frame, state: &EditorState, area: Rect) {
 }
 
 pub fn areas(area: Rect, state: &EditorState) -> Areas {
-    let (_, editor, bar, status) = layout(area, state.mode);
+    let (_, editor, bar, status, panel) = layout_with(area, state.mode, panel_cols(area, state));
     let doc = &state.tabs[state.active];
     let height = editor.height as usize;
     let (top, _) = visible_origin(doc, editor);
@@ -212,6 +215,150 @@ pub fn areas(area: Rect, state: &EditorState) -> Areas {
         top,
         picker_row: picker_row(area, state),
         modal: modal_rect(area, state),
+        panel,
+        tree_list: panel.map(|p| tree_list(p)),
+        tree_row: panel.and_then(|p| tree_row_rect(p, state)),
+        tree_top: state.tree.top(),
+    }
+}
+
+fn panel_cols(area: Rect, state: &EditorState) -> u16 {
+    if state.tree.visible { crate::tree::width(area.width) } else { 0 }
+}
+
+pub fn panel_rect(area: Rect, state: &EditorState) -> Option<Rect> {
+    layout_with(area, state.mode, panel_cols(area, state)).4
+}
+
+fn tree_list(panel: Rect) -> Rect {
+    Rect::new(panel.x, panel.y + 1, panel.width.saturating_sub(2), panel.height.saturating_sub(1))
+}
+
+fn tree_row_rect(panel: Rect, state: &EditorState) -> Option<Rect> {
+    let list = tree_list(panel);
+    let offset = state.tree.selected.checked_sub(state.tree.top())? as u16;
+    (offset < list.height && !state.tree.rows.is_empty()).then(|| Rect::new(list.x, list.y + offset, list.width, 1))
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum TreeHit {
+    Row(usize),
+    Header,
+    Panel,
+}
+
+pub fn tree_hit(area: Rect, state: &EditorState, x: u16, y: u16) -> Option<TreeHit> {
+    let panel = panel_rect(area, state)?;
+    if !panel.contains(Position::new(x, y)) {
+        return None;
+    }
+    let list = tree_list(panel);
+    if y == panel.y {
+        return Some(TreeHit::Header);
+    }
+    if !list.contains(Position::new(x, y)) {
+        return Some(TreeHit::Panel);
+    }
+    let index = state.tree.top() + (y - list.y) as usize;
+    Some(if index < state.tree.rows.len() { TreeHit::Row(index) } else { TreeHit::Panel })
+}
+
+pub fn logo_hit(area: Rect, x: u16, y: u16) -> bool {
+    y == area.y && x >= area.x && x < area.x + 4
+}
+
+pub fn scroll_tree(area: Rect, state: &EditorState, rows: isize) {
+    if let Some(panel) = panel_rect(area, state) {
+        state.tree.scroll_by(rows, tree_list(panel).height as usize);
+    }
+}
+
+fn render_tree(frame: &mut Frame, state: &EditorState, panel: Rect) {
+    let p = theme::pal();
+    let tree = &state.tree;
+    let focused = matches!(state.mode, Mode::Tree);
+    let buf = frame.buffer_mut();
+    let rail_x = panel.right().saturating_sub(2);
+    let list = tree_list(panel);
+    let start = tree.view_top(list.height as usize);
+    let edge = if focused { p.ice } else { p.ghost };
+    let heavy = Style::default().fg(edge).add_modifier(Modifier::BOLD);
+    let thin = Style::default().fg(p.ghost);
+    let put = |buf: &mut ratatui::buffer::Buffer, x: u16, y: u16, symbol: &str, style: Style| {
+        if let Some(cell) = buf.cell_mut((x, y)) {
+            cell.set_symbol(symbol).set_style(style);
+        }
+    };
+    for x in panel.x..rail_x {
+        put(buf, x, panel.y, "━", heavy);
+    }
+    put(buf, rail_x, panel.y, "┓", heavy);
+    let name = tree.name();
+    let title = Style::default().fg(if focused { p.hot } else { p.text }).add_modifier(Modifier::BOLD);
+    let mut x = panel.x + 1;
+    for (symbol, style) in std::iter::once(("╸".to_string(), heavy))
+        .chain(std::iter::once((" ".to_string(), title)))
+        .chain(name.chars().map(|c| (c.to_string(), title)))
+        .chain([(" ".to_string(), title), ("╺".to_string(), heavy)])
+    {
+        if x + 1 >= rail_x {
+            break;
+        }
+        put(buf, x, panel.y, &symbol, style);
+        x += 1;
+    }
+    let selected_y = tree.selected.checked_sub(start).map(|o| list.y + o as u16).filter(|y| *y < list.bottom());
+    for y in list.y..panel.bottom() {
+        let near = y == list.y || y + 1 == panel.bottom();
+        let (glyph, style) = match selected_y {
+            Some(s) if s == y && focused => ("┫", Style::default().fg(p.hot).add_modifier(Modifier::BOLD)),
+            Some(s) if s == y => ("┤", thin),
+            _ if near => ("┃", heavy),
+            _ => ("│", thin),
+        };
+        put(buf, rail_x, y, glyph, style);
+    }
+    if tree.rows.is_empty() {
+        let text = Paragraph::new(Span::styled("  this folder is empty", theme::dim()));
+        frame.render_widget(text, Rect::new(list.x, list.y, list.width, 1.min(list.height)));
+        return;
+    }
+    let active = state.tabs[state.active].path.as_deref().and_then(|p| std::fs::canonicalize(p).ok());
+    let width = list.width as usize;
+    for (offset, row) in tree.rows.iter().enumerate().skip(start).take(list.height as usize) {
+        let y = list.y + (offset - start) as u16;
+        let chosen = offset == tree.selected && focused;
+        let base = if chosen { Style::default().bg(p.selection) } else { Style::default() };
+        let name_style = if active.as_deref() == Some(row.path.as_path()) {
+            base.fg(p.hot).add_modifier(Modifier::BOLD)
+        } else if row.dir {
+            let s = base.fg(p.ice);
+            if row.open { s.add_modifier(Modifier::BOLD) } else { s }
+        } else if row.name.starts_with('.') {
+            base.fg(p.ghost)
+        } else {
+            base.fg(p.text)
+        };
+        let name_style = if chosen { name_style.add_modifier(Modifier::BOLD) } else { name_style };
+        let prefix = row.prefix();
+        let mut cells: Vec<(char, Style)> = prefix.chars().map(|c| (c, base.fg(p.ghost))).collect();
+        if let Some(mark) = cells.len().checked_sub(2) {
+            if row.dir {
+                cells[mark].1 = base.fg(if row.open { p.hot } else { p.ice });
+            }
+        }
+        cells.extend(row.name.chars().map(|c| (c, name_style)));
+        if cells.len() > width && width > 0 {
+            cells.truncate(width - 1);
+            cells.push(('…', base.fg(p.ghost)));
+        }
+        let buf = frame.buffer_mut();
+        if chosen {
+            buf.set_style(Rect::new(list.x, y, list.width, 1), base);
+        }
+        for (i, (c, style)) in cells.iter().enumerate() {
+            put(buf, list.x + i as u16, y, &c.to_string(), *style);
+        }
     }
 }
 
@@ -245,6 +392,7 @@ fn render_editor(
     area: Rect,
     allow_images: bool,
     cover: Option<Rect>,
+    pointer: Option<(u16, u16)>,
 ) {
     let height = area.height as usize;
     let (top, _) = visible_origin(doc, area);
@@ -260,6 +408,7 @@ fn render_editor(
     let mut lines: Vec<Line> = Vec::new();
     let selecting = doc.has_selection();
     doc.clear_images();
+    let mut labels: Vec<(u16, u16, std::path::PathBuf)> = Vec::new();
 
     for i in 0..height {
         let Some((line_idx, local)) = map.line_at(top + i) else {
@@ -282,31 +431,6 @@ fn render_editor(
         let mut spans = vec![Span::styled(number, number_style)];
         if let Some(view) = markdown.as_ref().filter(|_| !doc.is_raw_line(line_idx)) {
             if let Some(rendered) = view.lines.get(line_idx) {
-                if let Some(src) = rendered.image.as_deref() {
-                    if let Some(path) = image_path(doc, src) {
-                        let rows = crate::ghostty::IMAGE_ROWS;
-                        if local == 0 {
-                            let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("png");
-                            let style = Style::default().fg(theme::pal().ghost).add_modifier(Modifier::ITALIC);
-                            spans.push(Span::styled(name.to_string(), style));
-                        }
-                        if allow_images && local == 0 && i + rows <= height && width > 0 {
-                            let place = crate::ghostty::Place {
-                                x: area.x + gutter_w as u16,
-                                y: area.y + i as u16,
-                                cols: width as u16,
-                                rows: rows as u16,
-                                path,
-                            };
-                            let place_rect = Rect::new(place.x, place.y, place.cols, place.rows);
-                            if !overlaps(cover, place_rect) {
-                                doc.note_image(place);
-                            }
-                        }
-                        lines.push(Line::from(spans));
-                        continue;
-                    }
-                }
                 if let Some(bg) = rendered.bg {
                     tinted_rows.push((i, bg));
                 }
@@ -315,9 +439,12 @@ fn render_editor(
                 if fits_centered || width == 0 {
                     let pad = if width == 0 { 0 } else { centered_pad(rendered, cells.len(), width) };
                     let mut shown: Vec<(char, Style)> = vec![(' ', Style::default()); pad];
-                    for &(c, style, src) in &cells {
-                        let hit = highlights.iter().any(|&(l, s, e)| l == line_idx && s <= src && src < e);
-                        shown.push((c, if hit { theme::find_match() } else { theme::text().patch(style) }));
+                    for (dcol, &(c, style, src)) in cells.iter().enumerate() {
+                        let find = highlights.iter().any(|&(l, s, e)| l == line_idx && s <= src && src < e);
+                        let x = area.x + gutter_w as u16 + (pad + dcol) as u16;
+                        let y = area.y + i as u16;
+                        let on_screen = width == 0 || pad + dcol < width;
+                        shown.push((c, link_paint(doc, rendered, dcol, style, find, x, y, on_screen, &mut labels)));
                     }
                     if let Some((c, style)) = rendered.fill {
                         shown.extend(std::iter::repeat_n((c, style), width.saturating_sub(shown.len())));
@@ -325,9 +452,11 @@ fn render_editor(
                     spans.extend(shown.into_iter().take(width).map(|(c, style)| Span::styled(c.to_string(), style)));
                 } else {
                     let start = local * width;
-                    for &(c, style, src) in cells.iter().skip(start).take(width) {
-                        let hit = highlights.iter().any(|&(l, s, e)| l == line_idx && s <= src && src < e);
-                        let paint = if hit { theme::find_match() } else { theme::text().patch(style) };
+                    for (offset, &(c, style, src)) in cells.iter().skip(start).take(width).enumerate() {
+                        let find = highlights.iter().any(|&(l, s, e)| l == line_idx && s <= src && src < e);
+                        let x = area.x + gutter_w as u16 + offset as u16;
+                        let y = area.y + i as u16;
+                        let paint = link_paint(doc, rendered, start + offset, style, find, x, y, true, &mut labels);
                         spans.push(Span::styled(c.to_string(), paint));
                     }
                     if local + 1 == map.rows_of(line_idx) {
@@ -387,6 +516,13 @@ fn render_editor(
         lines.push(Line::from(spans));
     }
 
+    let text = Rect::new(area.x + gutter_w as u16, area.y, width as u16, area.height);
+    let place = if allow_images { preview_for(&labels, pointer, text, cover) } else { None };
+    if let Some(place) = place.as_ref() {
+        doc.note_image(place.clone());
+    }
+    doc.set_image_hot(&labels, place.as_ref());
+
     for (row, bg) in tinted_rows {
         let x = area.x + gutter_w as u16;
         let tint = Rect::new(x, area.y + row as u16, area.width.saturating_sub(gutter_w as u16), 1);
@@ -428,24 +564,84 @@ fn screen_map(doc: &Document, width: usize) -> crate::wrap::Map {
     crate::wrap::Map::from_counts(&counts)
 }
 
+fn link_paint(
+    doc: &Document,
+    rendered: &crate::markdown::RenderedLine,
+    dcol: usize,
+    style: Style,
+    find: bool,
+    x: u16,
+    y: u16,
+    on_screen: bool,
+    labels: &mut Vec<(u16, u16, std::path::PathBuf)>,
+) -> Style {
+    if on_screen {
+        if let Some(path) = rendered.image_at(dcol).and_then(|src| image_path(doc, src)) {
+            labels.push((x, y, path));
+            if !find {
+                return Style::default().fg(theme::pal().ice).add_modifier(Modifier::UNDERLINED);
+            }
+        }
+    }
+    if find { theme::find_match() } else { theme::text().patch(style) }
+}
+
+fn preview_for(labels: &[(u16, u16, std::path::PathBuf)], pointer: Option<(u16, u16)>, bounds: Rect, cover: Option<Rect>) -> Option<crate::ghostty::Place> {
+    let (px, py) = pointer?;
+    if bounds.width < 8 || bounds.height < 5 {
+        return None;
+    }
+    let mut groups: Vec<(std::path::PathBuf, Vec<(u16, u16)>)> = Vec::new();
+    for (x, y, path) in labels {
+        if let Some(group) = groups.iter_mut().find(|(got, _)| got == path) {
+            group.1.push((*x, *y));
+        } else {
+            groups.push((path.clone(), vec![(*x, *y)]));
+        }
+    }
+    let mut over_preview = None;
+    for (path, cells) in groups {
+        let Some(rect) = preview_rect(&cells, bounds, cover) else {
+            continue;
+        };
+        if cells.iter().any(|&(x, y)| x == px && y == py) {
+            return Some(crate::ghostty::Place { x: rect.x, y: rect.y, cols: rect.width, rows: rect.height, path });
+        }
+        if rect.contains(Position::new(px, py)) {
+            over_preview = Some(crate::ghostty::Place { x: rect.x, y: rect.y, cols: rect.width, rows: rect.height, path });
+        }
+    }
+    over_preview
+}
+
+fn preview_rect(cells: &[(u16, u16)], bounds: Rect, cover: Option<Rect>) -> Option<Rect> {
+    let min_x = cells.iter().map(|cell| cell.0).min()?;
+    let min_y = cells.iter().map(|cell| cell.1).min()?;
+    let max_y = cells.iter().map(|cell| cell.1).max()?;
+    let cols = crate::ghostty::PREVIEW_COLS.min(bounds.width);
+    let rows = crate::ghostty::PREVIEW_ROWS.min(bounds.height.saturating_sub(1));
+    if cols < 8 || rows < 4 {
+        return None;
+    }
+    let x = min_x.min(bounds.right().saturating_sub(cols)).max(bounds.x);
+    let below = max_y.checked_add(1).map(|y| Rect::new(x, y, cols, rows));
+    let above = min_y.checked_sub(rows).map(|y| Rect::new(x, y, cols, rows));
+    let fits = |rect: Rect| {
+        rect.y >= bounds.y
+            && rect.bottom() <= bounds.bottom()
+            && rect.x >= bounds.x
+            && rect.right() <= bounds.right()
+            && !cells.iter().any(|&(cx, cy)| rect.contains(Position::new(cx, cy)))
+            && !overlaps(cover, rect)
+    };
+    below.filter(|rect| fits(*rect)).or_else(|| above.filter(|rect| fits(*rect)))
+}
+
 fn image_path(doc: &Document, src: &str) -> Option<std::path::PathBuf> {
     if !doc.shows_graphics() {
         return None;
     }
     crate::ghostty::png_file(doc.path.as_deref(), src)
-}
-
-fn image_line(doc: &Document, line: usize) -> bool {
-    if !doc.shows_graphics() || doc.is_raw_line(line) {
-        return false;
-    }
-    let Some(view) = doc.rendered_view() else {
-        return false;
-    };
-    let Some(src) = view.lines.get(line).and_then(|rendered| rendered.image.as_deref()) else {
-        return false;
-    };
-    crate::ghostty::png_file(doc.path.as_deref(), src).is_some()
 }
 
 fn row_count(doc: &Document, line: usize, width: usize, view: Option<&crate::markdown::MdView>) -> usize {
@@ -454,13 +650,6 @@ fn row_count(doc: &Document, line: usize, width: usize, view: Option<&crate::mar
     }
     if let Some(view) = view.filter(|_| !doc.is_raw_line(line)) {
         if let Some(rendered) = view.lines.get(line) {
-            if doc.shows_graphics() {
-                if let Some(src) = rendered.image.as_deref() {
-                    if crate::ghostty::png_file(doc.path.as_deref(), src).is_some() {
-                        return crate::ghostty::IMAGE_ROWS;
-                    }
-                }
-            }
             if rendered.nowrap {
                 return 1;
             }
@@ -500,14 +689,14 @@ fn visible_origin(doc: &Document, area: Rect) -> (usize, usize) {
 pub fn page_rows(area: Rect, state: &EditorState) -> usize {
     let rows = match popup_rect(area, state) {
         Some(popup) => popup.height.saturating_sub(3),
-        None => editor_rect_for(area, state.mode).height,
+        None => editor_rect(area, state).height,
     };
     rows.max(1) as usize
 }
 
 pub fn scroll_view(area: Rect, state: &EditorState, lines: isize) {
     let doc = &state.tabs[state.active];
-    let editor = editor_rect_for(area, state.mode);
+    let editor = editor_rect(area, state);
     let top = visible_origin(doc, editor).0 as isize + lines;
     let map = screen_map(doc, doc.wrap_width.get());
     doc.scroll_top.set(top.clamp(0, map.max_top(editor.height as usize) as isize) as usize);
@@ -515,7 +704,7 @@ pub fn scroll_view(area: Rect, state: &EditorState, lines: isize) {
 
 pub fn scroll_sideways(area: Rect, state: &EditorState, _cols: isize) {
     let doc = &state.tabs[state.active];
-    let editor = editor_rect_for(area, state.mode);
+    let editor = editor_rect(area, state);
     visible_origin(doc, editor);
 }
 
@@ -595,8 +784,25 @@ fn render_menu(frame: &mut Frame, state: &EditorState, area: Rect) {
 }
 
 fn layout(area: Rect, mode: Mode) -> (Rect, Rect, Option<Rect>, Rect) {
+    let (tab, editor, bar, status, _) = layout_with(area, mode, 0);
+    (tab, editor, bar, status)
+}
+
+fn layout_with(area: Rect, mode: Mode, panel: u16) -> (Rect, Rect, Option<Rect>, Rect, Option<Rect>) {
+    let (tab, editor, bar, status) = rows(area, mode);
+    if panel == 0 {
+        return (tab, editor, bar, status, None);
+    }
+    let middle = Rect::new(area.x, editor.y, area.width, status.y.saturating_sub(editor.y));
+    let panel = panel.min(area.width);
+    let side = Rect::new(area.x, middle.y, panel, middle.height);
+    let shift = |r: Rect| Rect::new(r.x + panel, r.y, r.width.saturating_sub(panel), r.height);
+    (tab, shift(editor), bar.map(shift), status, Some(side))
+}
+
+fn rows(area: Rect, mode: Mode) -> (Rect, Rect, Option<Rect>, Rect) {
     match mode {
-        Mode::Normal | Mode::Picker | Mode::Menu => {
+        Mode::Normal | Mode::Picker | Mode::Menu | Mode::Tree => {
             let rects = Layout::vertical([
                 Constraint::Length(1),
                 Constraint::Min(0),
@@ -670,17 +876,19 @@ pub fn link_at(editor_area: Rect, mx: u16, my: u16, doc: &Document) -> Option<St
     rendered.link_at(dcol.checked_sub(pad)?).map(str::to_string)
 }
 
+#[cfg(test)]
 pub fn editor_rect_for(area: Rect, mode: Mode) -> Rect {
     layout(area, mode).1
+}
+
+pub fn editor_rect(area: Rect, state: &EditorState) -> Rect {
+    layout_with(area, state.mode, panel_cols(area, state)).1
 }
 
 /// Map a 0-indexed mouse position to a (line, col) document position, or None if the
 /// click falls outside a real line of the active document.
 pub fn mouse_to_doc(editor_area: Rect, mx: u16, my: u16, doc: &Document) -> Option<(usize, usize)> {
     let hit = locate(editor_area, mx, my, doc)?;
-    if image_line(doc, hit.line) {
-        return Some((hit.line, 0));
-    }
     let len = doc.lines[hit.line].chars().count();
     let col = match display_col(doc, &hit) {
         Some((rendered, pad, dcol)) => rendered.display_to_source(dcol.saturating_sub(pad), len),
@@ -777,6 +985,7 @@ fn render_status_bar(frame: &mut Frame, state: &EditorState, area: Rect) {
     };
     let mode_color = match state.mode {
         Mode::Normal | Mode::Menu => theme::pal().ice,
+        Mode::Tree => theme::pal().violet,
         Mode::Picker => theme::pal().hot,
         Mode::Find => theme::pal().hot,
         Mode::Replace => theme::pal().amber,
@@ -1825,7 +2034,7 @@ xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx";
     }
 
     #[test]
-    fn a_local_png_in_markdown_takes_a_band_only_when_graphics_can_show_it() {
+    fn a_local_png_is_a_link_and_the_picture_shows_while_the_pointer_is_on_it() {
         let dir = std::env::temp_dir().join(format!("ee-img-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
@@ -1838,29 +2047,51 @@ xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx";
         state.tabs[0].cursor = (1, 0);
         let area = Rect::new(0, 0, 40, 16);
         let editor = editor_rect_for(area, Mode::Normal);
-        let rows = render_rows(draw(&state, area.width, area.height).backend().buffer());
+        let term = draw(&state, area.width, area.height);
+        let buf = term.backend().buffer();
+        let rows = render_rows(buf);
         let cat = rows.iter().position(|row| row.contains("cat")).unwrap();
         let next = rows.iter().position(|row| row.contains("next")).unwrap();
         assert_eq!(next, cat + 1, "graphics off stays one row: {:?}", rows);
+        let x = rows[cat].find("cat").unwrap() as u16;
+        let plain = buf.cell((x, cat as u16)).unwrap();
+        assert_eq!(plain.fg, theme::pal().amber);
+        assert!(plain.modifier.contains(Modifier::ITALIC));
         assert!(state.tabs[0].take_images().is_empty());
 
         state.tabs[0].set_graphics(true);
         let term = draw(&state, area.width, area.height);
         let buf = term.backend().buffer();
         let rows = render_rows(buf);
-        let pic = rows.iter().position(|row| row.contains("pic.png")).unwrap();
+        let cat = rows.iter().position(|row| row.contains("cat")).unwrap();
         let next = rows.iter().position(|row| row.contains("next")).unwrap();
-        assert_eq!(next, pic + crate::ghostty::IMAGE_ROWS, "the picture has room: {:?}", rows);
-        let x = rows[pic].find("pic.png").unwrap() as u16;
-        let cell = buf.cell((x, pic as u16)).unwrap();
-        assert_eq!(cell.fg, theme::pal().ghost);
-        assert!(cell.modifier.contains(Modifier::ITALIC));
-        assert_eq!(mouse_to_doc(editor, x, (pic + 3) as u16, &state.tabs[0]), Some((0, 0)));
+        assert_eq!(next, cat + 1, "the link does not reserve rows: {:?}", rows);
+        let x = rows[cat].find("cat").unwrap() as u16;
+        let cell = buf.cell((x, cat as u16)).unwrap();
+        assert_eq!(cell.fg, theme::pal().ice);
+        assert!(cell.modifier.contains(Modifier::UNDERLINED));
+        assert!(state.tabs[0].take_images().is_empty(), "the picture waits for the pointer");
+        let (line, col) = mouse_to_doc(editor, x, cat as u16, &state.tabs[0]).unwrap();
+        assert_eq!(state.tabs[0].lines[line].chars().nth(col), Some('c'));
+
+        state.pointer = Some((x, cat as u16));
+        draw(&state, area.width, area.height);
         let places = state.tabs[0].take_images();
         assert_eq!(places.len(), 1);
-        assert_eq!((places[0].rows as usize, places[0].y), (crate::ghostty::IMAGE_ROWS, pic as u16));
-        assert!(places[0].cols > 0 && places[0].path.ends_with("pic.png"));
+        assert!(places[0].path.ends_with("pic.png"));
+        assert!(places[0].rows >= 4 && places[0].cols >= 8);
+        assert!(places[0].y > cat as u16, "the picture sits off the link");
+        let editor_bottom = editor.y + editor.height;
+        assert!(places[0].y + places[0].rows <= editor_bottom);
+        state.pointer = Some((places[0].x, places[0].y));
+        draw(&state, area.width, area.height);
+        assert_eq!(state.tabs[0].take_images().len(), 1, "the picture stays while the pointer is on it");
 
+        state.pointer = Some((0, next as u16));
+        draw(&state, area.width, area.height);
+        assert!(state.tabs[0].take_images().is_empty(), "the picture goes away off the link and off the picture");
+
+        state.pointer = Some((x, cat as u16));
         state.reload = Some(crate::state::ReloadPrompt { id: state.tabs[0].id, choice: 0, deleted: false });
         draw(&state, area.width, area.height);
         assert!(state.tabs[0].take_images().is_empty(), "an image must not cover the modal");
@@ -1868,42 +2099,92 @@ xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx";
 
         state.json = Some(crate::state::JsonPrompt { id: state.tabs[0].id });
         draw(&state, area.width, area.height);
-        assert!(state.tabs[0].take_images().is_empty(), "an image must not cover the corner button");
+        let chip = context_chip(area, &state).unwrap();
+        for place in state.tabs[0].take_images() {
+            let rect = Rect::new(place.x, place.y, place.cols, place.rows);
+            assert!(!rect.intersects(chip.band) && !rect.intersects(chip.action) && !rect.intersects(chip.dismiss));
+        }
         state.json = None;
 
-        draw(&state, 40, 7);
-        assert!(state.tabs[0].take_images().is_empty(), "a band that does not fit is not placed");
+        state.pointer = Some((x, 1));
+        draw(&state, 40, 3);
+        assert!(state.tabs[0].take_images().is_empty(), "a picture that cannot fit is not placed");
 
         state.tabs[0].cursor = (0, 0);
+        state.pointer = Some((2, editor.y));
         let rows = render_rows(draw(&state, area.width, area.height).backend().buffer());
         let raw = rows.iter().position(|row| row.contains("![cat]")).unwrap();
         let next = rows.iter().position(|row| row.contains("next")).unwrap();
         assert_eq!(next, raw + 1, "the caret line stays the source: {:?}", rows);
+        assert!(state.tabs[0].take_images().is_empty());
 
         for source in ["![cat](https://example.com/a.png)\nnext", "![cat](missing.png)\nnext", "<img src=\"pic.svg\" alt=\"cat\">\nnext"] {
             state.tabs[0] = Document::with_content("note.md", source);
             state.tabs[0].path = Some(doc_path.to_string_lossy().into_owned());
             state.tabs[0].set_graphics(true);
             state.tabs[0].cursor = (1, 0);
-            let rows = render_rows(draw(&state, area.width, area.height).backend().buffer());
+            state.pointer = None;
+            let term = draw(&state, area.width, area.height);
+            let rows = render_rows(term.backend().buffer());
             let cat = rows.iter().position(|row| row.contains("cat")).unwrap();
             let next = rows.iter().position(|row| row.contains("next")).unwrap();
             assert_eq!(next, cat + 1, "{source}: {:?}", rows);
+            let x = rows[cat].find("cat").unwrap() as u16;
+            let cell = term.backend().buffer().cell((x, cat as u16)).unwrap();
+            assert!(!cell.modifier.contains(Modifier::UNDERLINED), "{source}");
+            state.pointer = Some((x, cat as u16));
+            draw(&state, area.width, area.height);
+            assert!(state.tabs[0].take_images().is_empty(), "{source}");
         }
+
+        state.tabs[0] = Document::with_content("note.md", "see ![cat](pic.png) here\nnext");
+        state.tabs[0].path = Some(doc_path.to_string_lossy().into_owned());
+        state.tabs[0].set_graphics(true);
+        state.tabs[0].cursor = (1, 0);
+        let term = draw(&state, area.width, area.height);
+        let rows = render_rows(term.backend().buffer());
+        let row = rows.iter().position(|line| line.contains("see") && line.contains("here")).unwrap();
+        let cat_x = rows[row].find("cat").unwrap() as u16;
+        let see_x = rows[row].find("see").unwrap() as u16;
+        state.pointer = Some((see_x, row as u16));
+        draw(&state, area.width, area.height);
+        assert!(state.tabs[0].take_images().is_empty(), "the words around the image are not the picture");
+        state.pointer = Some((cat_x, row as u16));
+        draw(&state, area.width, area.height);
+        let places = state.tabs[0].take_images();
+        assert_eq!(places.len(), 1);
+        assert!(places[0].path.ends_with("pic.png"));
+
+        state.tabs[0] = Document::with_content("note.md", "![](pic.png)\nnext");
+        state.tabs[0].path = Some(doc_path.to_string_lossy().into_owned());
+        state.tabs[0].set_graphics(true);
+        state.tabs[0].cursor = (1, 0);
+        state.pointer = None;
+        let rows = render_rows(draw(&state, area.width, area.height).backend().buffer());
+        let pic = rows.iter().position(|row| row.contains("pic.png")).unwrap();
+        let next = rows.iter().position(|row| row.contains("next")).unwrap();
+        assert_eq!(next, pic + 1, "an empty alt is the filename: {:?}", rows);
 
         state.tabs[0] = Document::with_content("note.md", "<img src=\"pic.png\" alt=\"cat\">\nnext");
         state.tabs[0].path = Some(doc_path.to_string_lossy().into_owned());
         state.tabs[0].set_graphics(true);
         state.tabs[0].cursor = (1, 0);
-        let rows = render_rows(draw(&state, area.width, area.height).backend().buffer());
-        let pic = rows.iter().position(|row| row.contains("pic.png")).unwrap();
+        let term = draw(&state, area.width, area.height);
+        let rows = render_rows(term.backend().buffer());
+        let cat = rows.iter().position(|row| row.contains("cat")).unwrap();
         let next = rows.iter().position(|row| row.contains("next")).unwrap();
-        assert_eq!(next, pic + crate::ghostty::IMAGE_ROWS, "an html png uses the same band: {:?}", rows);
+        assert_eq!(next, cat + 1, "an html png stays one row: {:?}", rows);
+        let x = rows[cat].find("cat").unwrap() as u16;
+        assert!(term.backend().buffer().cell((x, cat as u16)).unwrap().modifier.contains(Modifier::UNDERLINED));
+        state.pointer = Some((x, cat as u16));
+        draw(&state, area.width, area.height);
+        assert!(state.tabs[0].take_images().iter().any(|place| place.path.ends_with("pic.png")));
 
         state.tabs[0] = Document::with_content("note.md", "| a |\n|---|\n| ![x](pic.png) |\n\nz");
         state.tabs[0].path = Some(doc_path.to_string_lossy().into_owned());
         state.tabs[0].set_graphics(true);
         state.tabs[0].cursor = (4, 0);
+        state.pointer = None;
         let rows = render_rows(draw(&state, area.width, area.height).backend().buffer());
         let bars: Vec<usize> = rows.iter().enumerate().filter(|(_, row)| row.contains('│') || row.contains('╞')).map(|(i, _)| i).collect();
         assert_eq!(bars.len(), 3, "{:?}", rows);
@@ -1965,5 +2246,33 @@ xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx";
         state.apply(crate::keys::Action::ToggleRustView);
         let rows = render_rows(draw(&state, area.width, area.height).backend().buffer());
         assert!(rows.iter().any(|row| row.contains("static")), "turning it off shows the type again: {:?}", rows);
+    }
+
+    #[test]
+    fn the_project_panel_pushes_the_editor_right_and_its_rows_take_clicks() {
+        let dir = crate::tree::scratch::Dir::project();
+        let mut state = EditorState::new();
+        state.tabs[0] = Document::with_content("t", "hello\nworld");
+        state.tree.root = dir.0.clone();
+        let area = Rect::new(0, 0, 80, 12);
+        let closed = render_rows(draw(&state, area.width, area.height).backend().buffer());
+        state.apply(crate::keys::Action::ToggleProjectView);
+        let width = crate::tree::width(area.width);
+        let editor = editor_rect(area, &state);
+        assert_eq!((editor.x, editor.width), (width, area.width - width));
+        let rows = render_rows(draw(&state, area.width, area.height).backend().buffer());
+        let name = dir.0.file_name().unwrap().to_string_lossy().to_string();
+        assert!(rows[1].contains(&name), "the header names the folder: {:?}", rows);
+        assert!(rows[2].starts_with("├▸ src"), "{:?}", rows);
+        assert!(rows[1][..].contains("┓") && rows[2].chars().nth(width as usize - 2) == Some('┫'), "{:?}", rows);
+        assert!(rows[1].chars().skip(width as usize).collect::<String>().starts_with("1 hello"), "{:?}", rows);
+        assert_eq!(mouse_to_doc(editor, editor.x + 2, editor.y, &state.tabs[0]), Some((0, 0)), "clicks in the text land on the shifted columns");
+        assert_eq!(tree_hit(area, &state, 3, 3), Some(TreeHit::Row(1)));
+        assert_eq!(tree_hit(area, &state, 3, 1), Some(TreeHit::Header));
+        assert_eq!(tree_hit(area, &state, 3, 10), Some(TreeHit::Panel));
+        assert_eq!(tree_hit(area, &state, width, 3), None);
+
+        state.apply(crate::keys::Action::ToggleProjectView);
+        assert_eq!(render_rows(draw(&state, area.width, area.height).backend().buffer())[1..11], closed[1..11], "closed, the editor looks as before");
     }
 }

@@ -16,6 +16,7 @@ mod rust_view;
 mod state;
 mod syntax;
 mod theme;
+mod tree;
 mod update;
 mod ui;
 mod wrap;
@@ -69,6 +70,7 @@ fn main() -> std::io::Result<()> {
 
     let mut state = EditorState::new();
     state.recent = recent::Recent::load(recent::path());
+    state.tree.root = tree::project_root(&file_args);
     if !file_args.is_empty() {
         let mut tabs: Vec<Document> = Vec::with_capacity(file_args.len());
         let mut new_file = None;
@@ -95,11 +97,6 @@ fn main() -> std::io::Result<()> {
             state.note_new_file(&name);
         }
     }
-    state.set_graphics(ghostty::detect(
-        &env::var("TERM").unwrap_or_default(),
-        &env::var("TERM_PROGRAM").unwrap_or_default(),
-        env::var_os("HERDR_ENV").is_some(),
-    ));
     state.consider_json_offer();
 
     let backend = CrosstermBackend::new(stdout());
@@ -107,6 +104,12 @@ fn main() -> std::io::Result<()> {
 
     execute!(stdout(), EnterAlternateScreen, EnableMouseCapture, EnableBracketedPaste, EnableFocusChange)?;
     enable_raw_mode()?;
+    let graphics = ghostty::probe();
+    state.set_graphics(graphics);
+    if graphics {
+        let _ = stdout().write_all(b"\x1b[?1003h");
+        let _ = stdout().flush();
+    }
     let enhanced =
         env::var_os("EOE_LEGACY_KEYS").is_none() && supports_keyboard_enhancement().unwrap_or(false);
     if enhanced {
@@ -125,6 +128,10 @@ fn main() -> std::io::Result<()> {
 
     if enhanced {
         execute!(stdout(), PopKeyboardEnhancementFlags)?;
+    }
+    if graphics {
+        let _ = stdout().write_all(b"\x1b[?1003l");
+        let _ = stdout().flush();
     }
     disable_raw_mode()?;
     execute!(stdout(), DisableFocusChange, DisableBracketedPaste, DisableMouseCapture, LeaveAlternateScreen)?;
@@ -191,11 +198,35 @@ fn context_mouse(state: &mut EditorState, area: Rect, kind: MouseEventKind, colu
             _ => return true,
         }
     }
-    let editor = ui::editor_rect_for(area, state.mode);
+    let editor = ui::editor_rect(area, state);
     if let Some((line, col)) = ui::mouse_to_doc(editor, column, row, &state.tabs[state.active]) {
         state.apply(Action::OpenMenu { line, col, x: column, y: row });
     } else if open {
         state.apply(Action::CloseMenu);
+    }
+    true
+}
+
+fn tree_mouse(state: &mut EditorState, area: Rect, kind: MouseEventKind, column: u16, row: u16) -> bool {
+    if state.update.is_some() || !matches!(state.mode, state::Mode::Normal | state::Mode::Tree) {
+        return false;
+    }
+    let down = kind == MouseEventKind::Down(MouseButton::Left);
+    if down && ui::logo_hit(area, column, row) {
+        state.flip_project();
+        return true;
+    }
+    let Some(hit) = ui::tree_hit(area, state, column, row) else {
+        return false;
+    };
+    match kind {
+        MouseEventKind::Down(MouseButton::Left) => match hit {
+            ui::TreeHit::Row(index) => state.click_tree(index),
+            ui::TreeHit::Header | ui::TreeHit::Panel => state.focus_tree(),
+        },
+        MouseEventKind::ScrollUp => ui::scroll_tree(area, state, -3),
+        MouseEventKind::ScrollDown => ui::scroll_tree(area, state, 3),
+        _ => {}
     }
     true
 }
@@ -241,40 +272,45 @@ fn run(terminal: &mut Terminal<CrosstermBackend<Stdout>>, state: &mut EditorStat
     let mut images = ImageLayer::default();
     let mut last_click: Option<(Instant, (usize, usize), u8)> = None;
     let mut quitting = false;
+    let mut draw_frame = true;
     let mut update_check = update::spawn_check();
 
     loop {
         let area = screen(terminal)?;
-        if !motion.is_animating() {
-            state.theme.refresh();
-        }
-        if let Some(rx) = &update_check {
-            match rx.try_recv() {
-                Ok((from, to)) => {
-                    state.offer_update(from, to);
-                    update_check = None;
-                    let areas = ui::areas(area, state);
-                    for cue in state.take_cues() {
-                        motion.cue(cue, &areas);
-                    }
-                }
-                Err(std::sync::mpsc::TryRecvError::Disconnected) => update_check = None,
-                Err(std::sync::mpsc::TryRecvError::Empty) => {}
+        if !draw_frame {
+            draw_frame = true;
+        } else {
+            if !motion.is_animating() {
+                state.theme.refresh();
             }
-        }
-        let was_animating = motion.is_animating();
-        terminal.draw(|f| {
-            ui::render(f, state);
-            let area = f.area();
-            motion.render(f.buffer_mut(), area);
-        })?;
-        paint_images(state, &mut images, was_animating)?;
-        if was_animating && !motion.is_animating() && !quitting {
-            continue;
-        }
+            if let Some(rx) = &update_check {
+                match rx.try_recv() {
+                    Ok((from, to)) => {
+                        state.offer_update(from, to);
+                        update_check = None;
+                        let areas = ui::areas(area, state);
+                        for cue in state.take_cues() {
+                            motion.cue(cue, &areas);
+                        }
+                    }
+                    Err(std::sync::mpsc::TryRecvError::Disconnected) => update_check = None,
+                    Err(std::sync::mpsc::TryRecvError::Empty) => {}
+                }
+            }
+            let was_animating = motion.is_animating();
+            terminal.draw(|f| {
+                ui::render(f, state);
+                let area = f.area();
+                motion.render(f.buffer_mut(), area);
+            })?;
+            paint_images(state, &mut images, was_animating)?;
+            if was_animating && !motion.is_animating() && !quitting {
+                continue;
+            }
 
-        if quitting && !motion.is_animating() {
-            return Ok(());
+            if quitting && !motion.is_animating() {
+                return Ok(());
+            }
         }
         let wait = if motion.is_animating() {
             Some(Duration::from_millis(16))
@@ -290,6 +326,11 @@ fn run(terminal: &mut Terminal<CrosstermBackend<Stdout>>, state: &mut EditorStat
         }
         state.page_rows = ui::page_rows(area, state);
         let event = read()?;
+        let hover_same = if let Event::Mouse(mouse) = &event {
+            !state.move_pointer(mouse.column, mouse.row)
+        } else {
+            false
+        };
         if quitting {
             continue;
         }
@@ -299,6 +340,11 @@ fn run(terminal: &mut Terminal<CrosstermBackend<Stdout>>, state: &mut EditorStat
         let had_reload = state.reload.is_some();
         state.look_for_disk_changes();
         let just_opened = state.reload.is_some() && !had_reload;
+        if let Event::Mouse(mouse) = &event {
+            if mouse.kind == MouseEventKind::Down(MouseButton::Left) && !just_opened && ui::tree_hit(area, state, mouse.column, mouse.row).is_none() {
+                state.focus_editor();
+            }
+        }
         let keep_running = if just_opened {
             true
         } else {
@@ -325,6 +371,7 @@ fn run(terminal: &mut Terminal<CrosstermBackend<Stdout>>, state: &mut EditorStat
             }
             Event::Mouse(_) | Event::Paste(_) if state.reload.is_some() => true,
             Event::Mouse(mouse) if context_mouse(state, area, mouse.kind, mouse.column, mouse.row) => true,
+            Event::Mouse(mouse) if tree_mouse(state, area, mouse.kind, mouse.column, mouse.row) => true,
             Event::Mouse(mouse)
                 if mouse.kind == MouseEventKind::Down(MouseButton::Left)
                     && ui::command_button(area, state).is_some_and(|b| b.contains(ratatui::layout::Position::new(mouse.column, mouse.row))) =>
@@ -335,7 +382,7 @@ fn run(terminal: &mut Terminal<CrosstermBackend<Stdout>>, state: &mut EditorStat
                 if mouse.kind == MouseEventKind::Down(MouseButton::Left)
                     && mouse.modifiers.contains(KeyModifiers::ALT) =>
             {
-                let editor_area = ui::editor_rect_for(area, state.mode);
+                let editor_area = ui::editor_rect(area, state);
                 if let Some((line, col)) =
                     ui::mouse_to_doc(editor_area, mouse.column, mouse.row, &state.tabs[state.active])
                 {
@@ -347,7 +394,7 @@ fn run(terminal: &mut Terminal<CrosstermBackend<Stdout>>, state: &mut EditorStat
                 if mouse.kind == MouseEventKind::Down(MouseButton::Left)
                     && mouse.modifiers.contains(KeyModifiers::CONTROL) =>
             {
-                let editor_area = ui::editor_rect_for(area, state.mode);
+                let editor_area = ui::editor_rect(area, state);
                 match ui::link_at(editor_area, mouse.column, mouse.row, &state.tabs[state.active]) {
                     Some(url) => state.apply(Action::FollowLink(url)),
                     None => true,
@@ -357,7 +404,7 @@ fn run(terminal: &mut Terminal<CrosstermBackend<Stdout>>, state: &mut EditorStat
                 if matches!(state.mode, state::Mode::Normal)
                     && matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left) | MouseEventKind::Drag(MouseButton::Left)) =>
             {
-                let editor_area = ui::editor_rect_for(area, state.mode);
+                let editor_area = ui::editor_rect(area, state);
                 let doc = &state.tabs[state.active];
                 let below = mouse.row >= editor_area.y + editor_area.height;
                 let at = ui::mouse_to_doc(editor_area, mouse.column, mouse.row, doc).or_else(|| {
@@ -392,6 +439,20 @@ fn run(terminal: &mut Terminal<CrosstermBackend<Stdout>>, state: &mut EditorStat
             }
             Event::Mouse(mouse) if matches!(mouse.kind, MouseEventKind::ScrollLeft | MouseEventKind::ScrollRight) => {
                 ui::scroll_sideways(area, state, if mouse.kind == MouseEventKind::ScrollLeft { -6 } else { 6 });
+                true
+            }
+            Event::Mouse(mouse)
+                if mouse.kind == MouseEventKind::Moved && hover_same && !motion.is_animating() && !quitting =>
+            {
+                draw_frame = false;
+                true
+            }
+            Event::FocusLost => {
+                state.clear_pointer();
+                true
+            }
+            Event::FocusGained => {
+                state.refresh_tree();
                 true
             }
             Event::Paste(text) => {

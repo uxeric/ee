@@ -25,6 +25,9 @@ enum Slot {
     Modal,
     Lock,
     Depart,
+    Panel,
+    Fold,
+    TreeLock,
 }
 
 pub struct Areas {
@@ -38,6 +41,10 @@ pub struct Areas {
     pub modal: Option<Rect>,
     pub picker_row: Option<Rect>,
     pub top: usize,
+    pub panel: Option<Rect>,
+    pub tree_list: Option<Rect>,
+    pub tree_row: Option<Rect>,
+    pub tree_top: usize,
 }
 
 pub struct Motion {
@@ -46,6 +53,7 @@ pub struct Motion {
     last_frame: Instant,
     shown: Option<Buffer>,
     grounded: Option<Arc<AtomicBool>>,
+    stale_tree: bool,
 }
 
 impl Motion {
@@ -56,6 +64,7 @@ impl Motion {
             last_frame: Instant::now(),
             shown: None,
             grounded: None,
+            stale_tree: false,
         }
     }
 
@@ -151,6 +160,44 @@ impl Motion {
                 ]);
                 self.add(Slot::Status, fail.with_area(areas.status));
             }
+            Cue::PanelOpened => {
+                if let Some(panel) = areas.panel {
+                    self.effects.cancel_unique_effect(Slot::Fold);
+                    self.stale_tree = false;
+                    self.add(Slot::Panel, unfurl(panel).with_area(panel));
+                }
+            }
+            Cue::PanelClosed => {
+                let width = crate::tree::width(areas.screen.width);
+                let rect = Rect::new(areas.screen.x, editor.y, width, areas.status.y.saturating_sub(editor.y));
+                let old = self.shown.as_ref().filter(|s| s.area == areas.screen).map(|s| snapshot(s, rect));
+                if let (Some(old), true) = (old, width > 0) {
+                    self.effects.cancel_unique_effect(Slot::Fold);
+                    self.stale_tree = true;
+                    self.add(Slot::Panel, retract(old, rect));
+                }
+            }
+            Cue::TreeMoved => {
+                if let Some(row) = areas.tree_row {
+                    self.add(Slot::TreeLock, lock_on().with_area(row));
+                }
+            }
+            Cue::Folded { row, count, open } => {
+                let Some(list) = areas.tree_list else { return };
+                let Some(y) = row.checked_sub(areas.tree_top).map(|r| list.y + r as u16).filter(|y| *y < list.bottom()) else { return };
+                let below = Rect::new(list.x, y + 1, list.width, list.bottom() - (y + 1));
+                let flash = flare().with_area(Rect::new(list.x, y, list.width, 1));
+                let blind = self
+                    .shown
+                    .as_ref()
+                    .filter(|s| s.area == areas.screen && below.height > 0)
+                    .map(|s| roll(snapshot(s, below), count.min(below.height as usize), open).with_area(below));
+                self.stale_tree = true;
+                match blind {
+                    Some(blind) => self.add(Slot::Fold, fx::parallel(&[flash, blind])),
+                    None => self.add(Slot::Fold, flash),
+                }
+            }
             Cue::Quit => {
                 let fade = fx::parallel(&[
                     fx::dissolve((300, Interpolation::QuadIn)),
@@ -173,6 +220,10 @@ impl Motion {
     }
 
     pub fn interrupt(&mut self) {
+        if std::mem::take(&mut self.stale_tree) {
+            self.effects.cancel_unique_effect(Slot::Fold);
+            self.effects.cancel_unique_effect(Slot::Panel);
+        }
         if let Some(grounded) = self.grounded.take() {
             grounded.store(true, Ordering::Relaxed);
             self.effects.cancel_unique_effect(Slot::Depart);
@@ -479,6 +530,162 @@ fn decrypt(ms: u32) -> Effect {
     })
 }
 
+fn snapshot(buf: &Buffer, rect: Rect) -> Vec<Vec<Cell>> {
+    (rect.top()..rect.bottom())
+        .map(|y| (rect.left()..rect.right()).map(|x| buf.cell((x, y)).cloned().unwrap_or_default()).collect())
+        .collect()
+}
+
+fn ease_out(t: f32) -> f32 {
+    1.0 - (1.0 - t.clamp(0.0, 1.0)).powi(3)
+}
+
+const SLIDE_MS: f32 = 220.0;
+const ROW_STAGGER_MS: f32 = 14.0;
+const ROW_DECODE_MS: f32 = 170.0;
+
+/// The project panel opening: it slides out from the left edge with the rail
+/// leading, then each row decodes out of hex noise, top row first.
+fn unfurl(panel: Rect) -> Effect {
+    let rows = panel.height.saturating_sub(1) as f32;
+    let spread = (rows * ROW_STAGGER_MS).min(300.0);
+    let total = SLIDE_MS * 0.6 + spread + ROW_DECODE_MS;
+    fx::effect_fn_buf((), (total as u32, Interpolation::Linear), move |_, ctx, buf| {
+        let area = ctx.area;
+        let now = ctx.alpha() * total;
+        let p = theme::pal();
+        let fresh = snapshot(buf, area);
+        let full = area.width as usize;
+        let shown = (full as f32 * ease_out(now / SLIDE_MS)).round() as usize;
+        let tick = (now / 33.0) as u32;
+        for (r, row) in fresh.iter().enumerate() {
+            let y = area.y + r as u16;
+            let start = SLIDE_MS * 0.6 + if rows > 1.0 { (r.saturating_sub(1)) as f32 / (rows - 1.0) * spread } else { 0.0 };
+            let decode = ((now - start) / ROW_DECODE_MS).clamp(0.0, 1.0);
+            for i in 0..full {
+                let x = area.x + i as u16;
+                let Some(cell) = buf.cell_mut((x, y)) else { continue };
+                if i >= shown {
+                    cell.reset();
+                    continue;
+                }
+                let src = &row[full - shown + i];
+                *cell = src.clone();
+                let rail = full - shown + i + 2 == full;
+                if rail {
+                    if now < SLIDE_MS * 1.6 {
+                        cell.set_fg(mix(p.hot, p.ice, (now / (SLIDE_MS * 1.6)).min(1.0)));
+                    }
+                    continue;
+                }
+                if r == 0 || src.symbol() == " " || full - shown + i + 2 > full {
+                    continue;
+                }
+                let col = (full - shown + i) as f32 / full.max(1) as f32;
+                let seed = scramble(x, y);
+                let reveal = col * 0.75 + (seed % 100) as f32 / 100.0 * 0.25;
+                if decode < reveal {
+                    let n = seed.wrapping_add(tick.wrapping_mul(2_654_435_761)) as usize;
+                    cell.set_symbol(NOISE[n % NOISE.len()]);
+                    cell.set_fg(if n % 6 == 0 { p.hot } else { mix(p.ghost, p.ice, decode) });
+                } else if decode < reveal + 0.12 {
+                    cell.set_style(Style::default().fg(p.ice).add_modifier(Modifier::BOLD));
+                }
+            }
+        }
+    })
+}
+
+/// The project panel closing: the last frame of the panel slides back off the
+/// left edge, and the text it uncovers flashes ice for a moment.
+fn retract(old: Vec<Vec<Cell>>, rect: Rect) -> Effect {
+    const MS: f32 = 240.0;
+    fx::effect_fn_buf(old, (MS as u32, Interpolation::Linear), move |old, ctx, buf| {
+        let t = ctx.alpha();
+        let full = rect.width as usize;
+        let shown = (full as f32 * (1.0 - t * t)).round() as usize;
+        let p = theme::pal();
+        for (r, row) in old.iter().enumerate() {
+            let y = rect.y + r as u16;
+            for i in 0..full + 3 {
+                let x = rect.x + i as u16;
+                let Some(cell) = buf.cell_mut((x, y)) else { continue };
+                if i < shown {
+                    *cell = row[full - shown + i].clone();
+                    if full - shown + i + 2 == full {
+                        cell.set_fg(mix(p.ice, p.hot, t));
+                    }
+                } else if i < shown + 3 && cell.symbol() != " " {
+                    let glow = (1.0 - (i - shown) as f32 / 3.0) * (1.0 - t);
+                    let target = match cell.fg {
+                        Color::Rgb(..) => cell.fg,
+                        _ => p.text,
+                    };
+                    cell.set_fg(mix(target, p.ice, glow));
+                }
+            }
+        }
+    })
+}
+
+/// A folder opening or closing under the row above `area`: its first `count`
+/// visible children unroll from under the folder like a blind, or roll back up
+/// into it, while the rows after them move with the blind's edge.
+fn roll(old: Vec<Vec<Cell>>, count: usize, open: bool) -> Effect {
+    let ms = (170.0 + count as f32 * 9.0).min(320.0);
+    fx::effect_fn_buf(old, (ms as u32, Interpolation::Linear), move |old, ctx, buf| {
+        let area = ctx.area;
+        let e = ease_out(ctx.alpha());
+        let fresh = snapshot(buf, area);
+        let p = theme::pal();
+        let moved = (count as f32 * e).round() as usize;
+        let block = if open { moved } else { count - moved };
+        for k in 0..area.height as usize {
+            let (row, in_block) = match (open, k < block) {
+                (true, true) => (fresh.get(count - block + k), true),
+                (true, false) => (old.get(k - block), false),
+                (false, true) => (old.get(count - block + k), true),
+                (false, false) => (fresh.get(k - block), false),
+            };
+            let y = area.y + k as u16;
+            for i in 0..area.width as usize {
+                let Some(cell) = buf.cell_mut((area.x + i as u16, y)) else { continue };
+                match row.and_then(|r| r.get(i)) {
+                    Some(src) => *cell = src.clone(),
+                    None => {
+                        cell.reset();
+                    }
+                }
+                if in_block && cell.symbol() != " " {
+                    let edge = k + 1 == block;
+                    let target = match cell.fg {
+                        Color::Rgb(..) => cell.fg,
+                        _ => p.text,
+                    };
+                    let heat = if edge { 1.0 - e * 0.6 } else { (1.0 - e) * 0.5 };
+                    cell.set_fg(mix(target, if edge { p.hot } else { p.ice }, heat));
+                }
+            }
+        }
+    })
+}
+
+fn flare() -> Effect {
+    fx::effect_fn_buf((), (360, Interpolation::Linear), |_, ctx, buf| {
+        let heat = 1.0 - ease_out(ctx.alpha());
+        let area = ctx.area;
+        for y in area.top()..area.bottom() {
+            for x in area.left()..area.right() {
+                let Some(cell) = buf.cell_mut((x, y)) else { continue };
+                if let Color::Rgb(..) = cell.fg {
+                    let fg = mix(cell.fg, theme::pal().hot, heat);
+                    cell.set_fg(fg);
+                }
+            }
+        }
+    })
+}
+
 fn lock_on() -> Effect {
     fx::sweep_in(Dir::LeftToRight, 12, 0, theme::pal().ice, (200, Interpolation::QuadOut))
 }
@@ -534,6 +741,10 @@ mod tests {
             modal: Some(Rect::new(2, 1, 36, 8)),
             picker_row: Some(Rect::new(5, 4, 28, 1)),
             top: 0,
+            panel: Some(Rect::new(0, 1, 16, 8)),
+            tree_list: Some(Rect::new(0, 2, 14, 7)),
+            tree_row: Some(Rect::new(0, 3, 14, 1)),
+            tree_top: 0,
         }
     }
 
@@ -554,6 +765,11 @@ mod tests {
             Cue::PickerMoved,
             Cue::UpdateOffered,
             Cue::ReloadOffered,
+            Cue::PanelOpened,
+            Cue::PanelClosed,
+            Cue::TreeMoved,
+            Cue::Folded { row: 0, count: 3, open: true },
+            Cue::Folded { row: 0, count: 3, open: false },
         ]
     }
 
@@ -646,6 +862,10 @@ mod tests {
             modal: None,
             picker_row: None,
             top: 0,
+            panel: None,
+            tree_list: None,
+            tree_row: None,
+            tree_top: 0,
         }
     }
 
@@ -769,5 +989,70 @@ mod tests {
             m.cue(cue, &a);
         }
         assert!(!m.is_animating());
+    }
+
+    fn panel_screen(rows: &[(u16, &str)]) -> Buffer {
+        let mut buf = Buffer::empty(areas().screen);
+        for &(y, text) in rows {
+            buf.set_string(0, y, text, ratatui::style::Style::default().fg(theme::pal().text));
+        }
+        buf
+    }
+
+    fn play(m: &mut Motion, base: &Buffer, mut each: impl FnMut(&Buffer)) -> Buffer {
+        let mut frame = base.clone();
+        while m.is_animating() {
+            frame = base.clone();
+            m.advance(StdDuration::from_millis(16), &mut frame, base.area);
+            each(&frame);
+        }
+        frame
+    }
+
+    #[test]
+    fn the_project_panel_slides_in_decodes_its_rows_and_ends_on_them() {
+        let a = areas();
+        let base = panel_screen(&[(1, "━╸ ee ╺━━━━━━━┓"), (2, "├▸ src        ┃"), (3, "└─ README.md  │"), (2, "")]);
+        let mut m = Motion::new(true);
+        m.cue(Cue::PanelOpened, &a);
+        let mut first = None;
+        let mut noise = false;
+        let last = play(&mut m, &base, |f| {
+            first.get_or_insert_with(|| row(f, 3));
+            noise |= row(f, 3).chars().any(|c| NOISE.iter().any(|n| n.starts_with(c)) && !"README.md".contains(c));
+        });
+        assert!(first.unwrap().chars().count() < "└─ README.md  │".chars().count(), "the panel starts partly off the left edge");
+        assert!(noise, "the rows decode out of noise");
+        assert_eq!(last, base, "the panel ends exactly as drawn");
+    }
+
+    #[test]
+    fn closing_the_project_panel_slides_the_old_one_away_and_ends_on_the_editor() {
+        let a = areas();
+        let old = panel_screen(&[(2, "├▸ src        ┃ 1 fn main"), (3, "└─ README.md  │ 2 }")]);
+        let new = panel_screen(&[(2, "1 fn main() {"), (3, "2 }")]);
+        let mut m = Motion::new(true);
+        m.render(&mut old.clone(), a.screen);
+        m.cue(Cue::PanelClosed, &a);
+        let mut slid = false;
+        let last = play(&mut m, &new, |f| slid |= row(f, 3).contains("ADME.md"));
+        assert!(slid, "the panel's names slide off to the left");
+        assert_eq!(last, new);
+    }
+
+    #[test]
+    fn a_folder_unrolls_from_under_itself_and_rolls_back_up() {
+        let a = areas();
+        let shut = panel_screen(&[(2, "├▸ src"), (3, "└─ b.md")]);
+        let open = panel_screen(&[(2, "├▾ src"), (3, "│ ├─ x.rs"), (4, "│ └─ y.rs"), (5, "└─ b.md")]);
+        for (from, to, opening) in [(&shut, &open, true), (&open, &shut, false)] {
+            let mut m = Motion::new(true);
+            m.render(&mut from.clone(), a.screen);
+            m.cue(Cue::Folded { row: 0, count: 2, open: opening }, &a);
+            let mut half = false;
+            let last = play(&mut m, to, |f| half |= row(f, 3) == "│ └─ y.rs" && row(f, 4) == "└─ b.md");
+            assert!(half, "halfway, only the folder's last child shows, with the next row right under it (opening: {opening})");
+            assert_eq!(&last, to, "it ends on the new rows (opening: {opening})");
+        }
     }
 }

@@ -1,16 +1,100 @@
+use std::io::{IsTerminal, Read, Write};
+use std::os::fd::AsRawFd;
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
-/// Rows a local PNG occupies when the terminal can show it. One row is a sliver.
-pub const IMAGE_ROWS: usize = 6;
+/// Cell size of the picture drawn while the pointer rests on an image link.
+/// One row is a sliver, so a preview shorter than a few rows is not placed.
+pub const PREVIEW_COLS: u16 = 36;
+pub const PREVIEW_ROWS: u16 = 12;
 
-/// True when this process is Ghostty itself, and not a pane inside herdr.
-/// herdr does not pass kitty graphics through, so a band there would be a hole.
-pub fn detect(term: &str, program: &str, herdr: bool) -> bool {
-    if herdr {
+/// herdr does not pass kitty graphics through. A positive answer from the
+/// outer terminal would still leave a hole where the picture should be.
+pub fn supported(herdr: bool, reply: &[u8]) -> bool {
+    !herdr && reply_ok(reply)
+}
+
+/// Ask the terminal, once, whether it speaks the kitty graphics protocol.
+/// The query is the spec's `a=q` followed by a primary-device-attributes
+/// request: a supporting terminal answers the graphics query before device
+/// attributes, and anything else answers the attributes alone. The reply is
+/// read from stdin, the same stream crossterm reads, and consumed here so it
+/// never comes back as keypresses. The query goes out on stdout, which is
+/// where the picture is painted. `/dev/tty` can be a different terminal when
+/// a pty owns stdin, and a yes from that other terminal would be a lie.
+pub fn probe() -> bool {
+    if std::env::var_os("HERDR_ENV").is_some() {
         return false;
     }
-    program.eq_ignore_ascii_case("ghostty") || term == "xterm-ghostty"
+    let mut input = std::io::stdin();
+    let mut output = std::io::stdout();
+    if !input.is_terminal() || !output.is_terminal() {
+        return false;
+    }
+    const QUERY: &[u8] = b"\x1b_Gi=31,s=1,v=1,a=q,t=d,f=24;AAAA\x1b\\\x1b[c";
+    if output.write_all(QUERY).is_err() || output.flush().is_err() {
+        return false;
+    }
+    supported(false, &read_reply(&mut input, Duration::from_millis(150)))
+}
+
+fn reply_ok(reply: &[u8]) -> bool {
+    let mut i = 0;
+    while let Some(rel) = reply[i..].windows(3).position(|w| w == b"\x1b_G") {
+        let start = i + rel + 3;
+        let rest = &reply[start..];
+        let end = rest.windows(2).position(|w| w == b"\x1b\\").unwrap_or(rest.len());
+        if rest[..end].windows(3).any(|w| w == b";OK") {
+            return true;
+        }
+        i = start + end;
+        if i >= reply.len() {
+            break;
+        }
+    }
+    false
+}
+
+fn da1_done(buf: &[u8]) -> bool {
+    let Some(at) = buf.windows(2).position(|w| w == b"\x1b[") else {
+        return false;
+    };
+    buf[at + 2..].contains(&b'c')
+}
+
+fn read_reply(tty: &mut (impl Read + AsRawFd), timeout: Duration) -> Vec<u8> {
+    let mut buf = Vec::new();
+    let start = Instant::now();
+    let fd = tty.as_raw_fd();
+    while start.elapsed() < timeout {
+        let left = timeout.saturating_sub(start.elapsed()).as_millis().min(i32::MAX as u128) as i32;
+        let mut pfd = PollFd { fd, events: 1, revents: 0 };
+        let ready = unsafe { poll(&mut pfd, 1, left.max(1)) };
+        if ready <= 0 {
+            break;
+        }
+        let mut tmp = [0u8; 512];
+        match tty.read(&mut tmp) {
+            Ok(0) | Err(_) => break,
+            Ok(n) => buf.extend_from_slice(&tmp[..n]),
+        }
+        if da1_done(&buf) {
+            break;
+        }
+    }
+    buf
+}
+
+#[repr(C)]
+struct PollFd {
+    fd: i32,
+    events: i16,
+    revents: i16,
+}
+
+unsafe extern "C" {
+    fn poll(fds: *mut PollFd, nfds: usize, timeout: i32) -> i32;
 }
 
 /// A local `.png` reference, still carrying any query or hash. Remote and
@@ -124,12 +208,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn graphics_are_on_only_in_ghostty_outside_herdr() {
-        assert!(detect("xterm-ghostty", "", false));
-        assert!(detect("xterm-256color", "Ghostty", false));
-        assert!(!detect("xterm-ghostty", "Ghostty", true));
-        assert!(!detect("xterm-kitty", "kitty", false));
-        assert!(!detect("", "", false));
+    fn a_graphics_query_counts_only_when_the_terminal_answers_ok() {
+        let ok = b"\x1b_Gi=31;OK\x1b\\\x1b[?62;22c";
+        assert!(supported(false, ok));
+        assert!(!supported(true, ok));
+        assert!(!supported(false, b"\x1b[?62;22c"));
+        assert!(!supported(false, b"\x1b_Gi=31;EINVAL:no\x1b\\"));
+        assert!(!supported(false, b"OK"));
+        assert!(da1_done(b"\x1b_Gi=31;OK\x1b\\\x1b[?62;22c"));
+        assert!(!da1_done(b"\x1b_Gi=31;OK\x1b\\"));
     }
 
     #[test]

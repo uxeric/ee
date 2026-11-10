@@ -1,3 +1,4 @@
+use std::cell::Cell;
 use std::ops::Range;
 
 use pulldown_cmark::{Alignment, BlockQuoteKind, CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
@@ -12,6 +13,7 @@ pub struct Seg {
     pub src: Range<usize>,
     pub verbatim: bool,
     pub link: Option<String>,
+    pub image: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -47,6 +49,7 @@ struct Piece {
     verbatim: bool,
     marker: bool,
     link: Option<String>,
+    image: Option<String>,
 }
 
 struct Table {
@@ -247,6 +250,7 @@ fn segs_from_roles(line: &str, roles: &[(Range<usize>, crate::syntax::Role)]) ->
         src: a..b,
         verbatim: true,
         link: None,
+        image: None,
     };
     let mut out = Vec::new();
     let mut i = 0;
@@ -304,6 +308,7 @@ fn highlight(line: &str, lang: &str) -> Vec<Seg> {
         src: a..b,
         verbatim: true,
         link: None,
+        image: None,
     };
     if n == 0 {
         return Vec::new();
@@ -404,7 +409,19 @@ pub fn build(lines: &[String]) -> MdView {
     let mut html: Vec<(String, Style)> = Vec::new();
     let mut center_stack: Vec<Option<usize>> = Vec::new();
 
+    let sticky: Cell<Option<String>> = Cell::new(None);
+    let once: Cell<Option<String>> = Cell::new(None);
+    let image_wrote = Cell::new(false);
+    let image_origin = Cell::new(0usize);
+    let image_of = || -> Option<String> {
+        if let Some(src) = once.take() {
+            return Some(src);
+        }
+        sticky.take().inspect(|src| sticky.set(Some(src.clone())))
+    };
+
     let push = |pieces: &mut Vec<Vec<Piece>>, r: Range<usize>, text: Option<&str>, style: Style, marker: bool, link: Option<&String>| {
+        let image = image_of();
         let (mut b, e) = (r.start, r.end);
         while b < e {
             let li = line_of(b);
@@ -417,16 +434,24 @@ pub fn build(lines: &[String]) -> MdView {
                     Some(t) if t != slice && pe == e && b == r.start => (t.to_string(), false),
                     _ => (slice.to_string(), true),
                 };
-                pieces[li].push(Piece { start: b - ls, end: pe - ls, text: t, style, verbatim, marker, link: link.cloned() });
+                let attached = image.clone().filter(|_| !t.is_empty());
+                if attached.is_some() {
+                    image_wrote.set(true);
+                }
+                pieces[li].push(Piece { start: b - ls, end: pe - ls, text: t, style, verbatim, marker, link: link.cloned(), image: attached });
             }
             b = le + 1;
         }
     };
 
     let at = |pieces: &mut Vec<Vec<Piece>>, byte: usize, text: String, style: Style, link: Option<&String>| {
+        let image = image_of().filter(|_| !text.is_empty());
+        if image.is_some() {
+            image_wrote.set(true);
+        }
         let li = line_of(byte);
         let col = (byte - starts[li]).min(lines[li].len());
-        pieces[li].push(Piece { start: col, end: col, text, style, verbatim: false, marker: false, link: link.cloned() });
+        pieces[li].push(Piece { start: col, end: col, text, style, verbatim: false, marker: false, link: link.cloned(), image });
     };
 
     let opts = Options::ENABLE_TABLES | Options::ENABLE_STRIKETHROUGH | Options::ENABLE_TASKLISTS | Options::ENABLE_GFM;
@@ -460,6 +485,9 @@ pub fn build(lines: &[String]) -> MdView {
                             if images[li].is_none() {
                                 images[li] = Some(src.to_string());
                             }
+                            sticky.set(Some(src.to_string()));
+                            image_wrote.set(false);
+                            image_origin.set(r.start);
                         }
                         top.fg(pal().amber).add_modifier(Modifier::ITALIC)
                     }
@@ -566,6 +594,16 @@ pub fn build(lines: &[String]) -> MdView {
                         list_stack.pop();
                     }
                     TagEnd::Item => pending_bullet = None,
+                    TagEnd::Image => {
+                        if let Some(src) = sticky.take() {
+                            if !image_wrote.replace(false) {
+                                let name = image_label("", &src);
+                                once.set(Some(src));
+                                let st = Style::default().fg(pal().amber).add_modifier(Modifier::ITALIC);
+                                at(&mut pieces, image_origin.get(), name, st, None);
+                            }
+                        }
+                    }
                     _ => {}
                 }
             }
@@ -668,6 +706,11 @@ pub fn build(lines: &[String]) -> MdView {
                                             push(&mut pieces, range, Some(&shown), on(label_bg), false, links.last());
                                         }
                                         at(&mut pieces, end, format!(" {} ", message), on(message_bg), links.last());
+                                    } else if let Some(src) = crate::ghostty::local_png(&src_attr) {
+                                        let shown = image_label(&alt, src);
+                                        once.set(Some(src.to_string()));
+                                        let st = Style::default().fg(pal().amber).add_modifier(Modifier::ITALIC);
+                                        push(&mut pieces, range, Some(&shown), st, false, links.last());
                                     } else if alt.trim().is_empty() {
                                         decor[li] = true;
                                         hide(&mut pieces, range);
@@ -794,7 +837,7 @@ fn compose(line: &str, kind: LineKind, ps: Vec<Piece>, in_quote: bool, alert: Op
     let cc = |b: usize| line[..b].chars().count();
     let n = line.chars().count();
     let dim = Style::default().fg(pal().ghost);
-    let whole = |text: String, style: Style| Seg { text, style, src: 0..n, verbatim: false, link: None };
+    let whole = |text: String, style: Style| Seg { text, style, src: 0..n, verbatim: false, link: None, image: None };
     let mut rl = RenderedLine::default();
     match &kind {
         LineKind::FenceOpen(lang) => {
@@ -804,12 +847,12 @@ fn compose(line: &str, kind: LineKind, ps: Vec<Piece>, in_quote: bool, alert: Op
             return rl;
         }
         LineKind::FenceClose | LineKind::Rule => {
-            rl.segs.push(Seg { text: String::new(), style: dim, src: 0..n, verbatim: false, link: None });
+            rl.segs.push(Seg { text: String::new(), style: dim, src: 0..n, verbatim: false, link: None, image: None });
             rl.fill = Some(('─', dim));
             return rl;
         }
         LineKind::SetextUnderline(lv) => {
-            rl.segs.push(Seg { text: String::new(), style: dim, src: 0..n, verbatim: false, link: None });
+            rl.segs.push(Seg { text: String::new(), style: dim, src: 0..n, verbatim: false, link: None, image: None });
             rl.fill = Some((if *lv == 1 { '═' } else { '─' }, heading_style(*lv).remove_modifier(Modifier::UNDERLINED)));
             return rl;
         }
@@ -825,7 +868,7 @@ fn compose(line: &str, kind: LineKind, ps: Vec<Piece>, in_quote: bool, alert: Op
             return rl;
         }
         LineKind::Plain if ps.is_empty() && !line.trim().is_empty() => {
-            rl.segs.push(Seg { text: line.to_string(), style: dim, src: 0..n, verbatim: true, link: None });
+            rl.segs.push(Seg { text: line.to_string(), style: dim, src: 0..n, verbatim: true, link: None, image: None });
             return rl;
         }
         _ => {}
@@ -842,7 +885,7 @@ fn compose(line: &str, kind: LineKind, ps: Vec<Piece>, in_quote: bool, alert: Op
                 c if c.is_whitespace() && leading && !heading => (" ", Style::default()),
                 _ => ("", Style::default()),
             };
-            rl.segs.push(Seg { text: t.to_string(), style: st, src: col..col + 1, verbatim: t.len() == 1 && c == ' ', link: None });
+            rl.segs.push(Seg { text: t.to_string(), style: st, src: col..col + 1, verbatim: t.len() == 1 && c == ' ', link: None, image: None });
         }
     };
     for p in ps {
@@ -853,12 +896,25 @@ fn compose(line: &str, kind: LineKind, ps: Vec<Piece>, in_quote: bool, alert: Op
         if !p.marker {
             leading = false;
         }
-        rl.segs.push(Seg { text: p.text, style: p.style, src: cc(p.start)..cc(p.end), verbatim: p.verbatim, link: p.link });
+        rl.segs.push(Seg { text: p.text, style: p.style, src: cc(p.start)..cc(p.end), verbatim: p.verbatim, link: p.link, image: p.image });
         pos = p.end;
     }
     gap(&mut rl, pos, line.len(), false);
     rl.segs.retain(|s| !(s.text.is_empty() && s.src.is_empty()));
     rl
+}
+
+fn image_label(alt: &str, src: &str) -> String {
+    let alt = alt.trim();
+    if !alt.is_empty() {
+        let mut shown: String = alt.chars().take(48).collect();
+        if alt.chars().count() > 48 {
+            shown.push('…');
+        }
+        return shown;
+    }
+    let bare = src.split(['?', '#']).next().unwrap_or(src);
+    std::path::Path::new(bare).file_name().and_then(|name| name.to_str()).unwrap_or(bare).to_string()
 }
 
 fn is_number(text: &str) -> bool {
@@ -880,11 +936,11 @@ fn cell_content(line: &str, (from, to): (usize, usize), pieces: &[Piece]) -> Vec
             for (off, c) in line[prev..p.start].char_indices() {
                 if c.is_whitespace() {
                     let col = cc(prev + off);
-                    segs.push(Seg { text: " ".into(), style: Style::default(), src: col..col + 1, verbatim: true, link: None });
+                    segs.push(Seg { text: " ".into(), style: Style::default(), src: col..col + 1, verbatim: true, link: None, image: None });
                 }
             }
         }
-        segs.push(Seg { text: p.text.clone(), style: p.style, src: cc(p.start)..cc(p.end), verbatim: p.verbatim, link: p.link.clone() });
+        segs.push(Seg { text: p.text.clone(), style: p.style, src: cc(p.start)..cc(p.end), verbatim: p.verbatim, link: p.link.clone(), image: p.image.clone() });
         pos = Some(p.end);
     }
     segs
@@ -904,11 +960,11 @@ fn table_row(
         None => Style::default(),
     };
     let border = base.fg(pal().ghost);
-    let filler = |text: String, col: usize| Seg { text, style: base, src: col..col + 1, verbatim: false, link: None };
+    let filler = |text: String, col: usize| Seg { text, style: base, src: col..col + 1, verbatim: false, link: None, image: None };
     let first = cells.first().map_or(0, |c| c.0);
     let lead = if first > 0 && line.as_bytes()[first - 1] == b'|' { first - 1 } else { first };
     let mut rl = RenderedLine::default();
-    rl.segs.push(Seg { text: "│".into(), style: border, src: cc(lead)..cc(lead) + 1, verbatim: false, link: None });
+    rl.segs.push(Seg { text: "│".into(), style: border, src: cc(lead)..cc(lead) + 1, verbatim: false, link: None, image: None });
     let mut contents = contents.into_iter();
     for (c, &width) in widths.iter().enumerate() {
         let (from, to) = cells.get(c).copied().unwrap_or((line.len(), line.len()));
@@ -927,7 +983,7 @@ fn table_row(
             rl.segs.push(seg);
         }
         rl.segs.push(filler(" ".repeat(right + 1), end));
-        rl.segs.push(Seg { text: "│".into(), style: border, src: cc(to)..cc(to) + 1, verbatim: false, link: None });
+        rl.segs.push(Seg { text: "│".into(), style: border, src: cc(to)..cc(to) + 1, verbatim: false, link: None, image: None });
     }
     rl.nowrap = true;
     rl
@@ -938,7 +994,7 @@ fn table_rule(widths: &[usize], line_len: usize) -> RenderedLine {
     let text = format!("╞{}╡", bars.join("╪"));
     let style = Style::default().fg(pal().ice);
     RenderedLine {
-        segs: vec![Seg { text, style, src: 0..line_len, verbatim: false, link: None }],
+        segs: vec![Seg { text, style, src: 0..line_len, verbatim: false, link: None, image: None }],
         nowrap: true,
         ..Default::default()
     }
@@ -958,11 +1014,19 @@ impl RenderedLine {
     }
 
     pub fn link_at(&self, dcol: usize) -> Option<&str> {
+        self.seg_at(dcol).and_then(|seg| seg.link.as_deref())
+    }
+
+    pub fn image_at(&self, dcol: usize) -> Option<&str> {
+        self.seg_at(dcol).and_then(|seg| seg.image.as_deref())
+    }
+
+    fn seg_at(&self, dcol: usize) -> Option<&Seg> {
         let mut d = 0;
         for s in &self.segs {
             let w = s.text.chars().count();
             if dcol < d + w {
-                return s.link.as_deref();
+                return Some(s);
             }
             d += w;
         }

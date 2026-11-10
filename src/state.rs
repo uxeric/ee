@@ -21,6 +21,7 @@ pub enum Mode {
     Prompt(PromptKind),
     Picker,
     Menu,
+    Tree,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -94,6 +95,10 @@ pub enum Cue {
     PickerMoved,
     UpdateOffered,
     ReloadOffered,
+    PanelOpened,
+    PanelClosed,
+    TreeMoved,
+    Folded { row: usize, count: usize, open: bool },
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -150,6 +155,7 @@ pub struct EditorState {
     pub reload: Option<ReloadPrompt>,
     pub json: Option<JsonPrompt>,
     graphics: bool,
+    pub pointer: Option<(u16, u16)>,
     pub menu: Option<Menu>,
     pub restart_for_update: bool,
     pub page_rows: usize,
@@ -158,6 +164,7 @@ pub struct EditorState {
     pub theme_choice: String,
     pub config_path: Option<std::path::PathBuf>,
     pub recent: crate::recent::Recent,
+    pub tree: crate::tree::Tree,
     theme_before: Option<crate::theme::Palette>,
 }
 
@@ -190,6 +197,7 @@ impl EditorState {
             reload: None,
             json: None,
             graphics: false,
+            pointer: None,
             menu: None,
             restart_for_update: false,
             page_rows: 1,
@@ -198,6 +206,7 @@ impl EditorState {
             theme_choice: "omarchy".to_string(),
             config_path: None,
             recent: crate::recent::Recent::default(),
+            tree: crate::tree::Tree::default(),
             theme_before: None,
         }
     }
@@ -214,12 +223,173 @@ impl EditorState {
             Mode::Replace => "Replace",
             Mode::Prompt(_) => "Prompt",
             Mode::Menu => "Menu",
+            Mode::Tree => "Project",
             Mode::Picker => match self.picker.as_ref().map(|p| p.kind) {
                 Some(PickerKind::Actions) => "Actions",
                 Some(PickerKind::Structure) => "Outline",
                 _ => "Open",
             },
         }
+    }
+
+    pub fn toggle_project(&mut self) {
+        match (self.tree.visible, self.mode) {
+            (false, _) => self.show_project(),
+            (true, Mode::Tree) => self.hide_project(),
+            (true, _) => self.mode = Mode::Tree,
+        }
+    }
+
+    fn show_project(&mut self) {
+        if self.tree.root.as_os_str().is_empty() {
+            self.tree.root = std::env::current_dir().unwrap_or_default();
+        }
+        self.tree.rebuild();
+        if let Some(path) = self.tabs[self.active].path.as_deref().and_then(|p| fs::canonicalize(p).ok()) {
+            self.tree.reveal(&path);
+        }
+        self.tree.visible = true;
+        self.mode = Mode::Tree;
+        self.cues.push(Cue::PanelOpened);
+    }
+
+    fn hide_project(&mut self) {
+        self.tree.visible = false;
+        if matches!(self.mode, Mode::Tree) {
+            self.mode = Mode::Normal;
+        }
+        self.cues.push(Cue::PanelClosed);
+    }
+
+    pub fn flip_project(&mut self) {
+        if self.reload.is_some() || self.update.is_some() {
+            return;
+        }
+        if self.tree.visible {
+            self.hide_project();
+        } else {
+            self.show_project();
+        }
+    }
+
+    pub fn focus_tree(&mut self) {
+        if self.tree.visible && matches!(self.mode, Mode::Normal) {
+            self.mode = Mode::Tree;
+        }
+    }
+
+    pub fn focus_editor(&mut self) {
+        if matches!(self.mode, Mode::Tree) {
+            self.mode = Mode::Normal;
+        }
+    }
+
+    pub fn refresh_tree(&mut self) {
+        if self.tree.visible {
+            self.tree.rebuild();
+        }
+    }
+
+    fn fold(&mut self, index: usize) {
+        let delta = self.tree.toggle(index);
+        if delta != 0 {
+            self.cues.push(Cue::Folded { row: index, count: delta.unsigned_abs(), open: delta > 0 });
+        }
+    }
+
+    /// A click on row `index` of the project panel: a folder opens or closes, a
+    /// file opens in the editor.
+    pub fn click_tree(&mut self, index: usize) {
+        if !self.tree.visible || self.reload.is_some() || self.update.is_some() || index >= self.tree.rows.len() {
+            return;
+        }
+        self.status.clear();
+        self.alert = None;
+        self.tree.select(index);
+        if self.tree.rows[index].dir {
+            self.mode = Mode::Tree;
+            self.fold(index);
+        } else {
+            self.open_tree_file(index);
+        }
+    }
+
+    fn open_tree_file(&mut self, index: usize) {
+        let path = self.tree.rows[index].path.to_string_lossy().to_string();
+        self.mode = Mode::Normal;
+        self.open_path(&path);
+    }
+
+    fn apply_tree(&mut self, action: Action, pending: Option<Pending>) -> bool {
+        let was = self.tree.selected;
+        let last = self.tree.rows.len().saturating_sub(1);
+        let page = self.page_rows.max(1);
+        let row = self.tree.selected_row().map(|r| (r.dir, r.open));
+        match action {
+            Action::Quit => return self.quit(pending == Some(Pending::Quit)),
+            Action::Up | Action::FindPrevious => {
+                self.tree.select(was.saturating_sub(1));
+            }
+            Action::Down | Action::FindNext => {
+                self.tree.select((was + 1).min(last));
+            }
+            Action::PageUp => {
+                self.tree.select(was.saturating_sub(page));
+            }
+            Action::PageDown => {
+                self.tree.select((was + page).min(last));
+            }
+            Action::Home | Action::BeginningOfFile => {
+                self.tree.select(0);
+            }
+            Action::End | Action::EndOfFile => {
+                self.tree.select(last);
+            }
+            Action::Right => match row {
+                Some((true, false)) => self.fold(was),
+                Some((true, true)) if self.tree.subtree_len(was) > 0 => {
+                    self.tree.select(was + 1);
+                }
+                _ => {}
+            },
+            Action::Left => match row {
+                Some((true, true)) => self.fold(was),
+                _ => {
+                    if let Some(parent) = self.tree.parent_of(was) {
+                        self.tree.select(parent);
+                    }
+                }
+            },
+            Action::Newline => match row {
+                Some((true, _)) => self.fold(was),
+                Some((false, _)) => self.open_tree_file(was),
+                None => {}
+            },
+            Action::InsertChar(c) if !c.is_whitespace() => {
+                self.tree.jump_to_letter(c);
+            }
+            Action::ClearExtraCaret => self.mode = Mode::Normal,
+            Action::ToggleProjectView => self.hide_project(),
+            Action::SaveAll
+            | Action::OpenFile
+            | Action::OpenRecent
+            | Action::NextTab
+            | Action::PreviousTab
+            | Action::CloseTab
+            | Action::SwitchTheme
+            | Action::FindInFiles
+            | Action::FileStructure
+            | Action::NavigateBack
+            | Action::NavigateForward => {
+                self.mode = Mode::Normal;
+                return self.apply_normal(action, pending);
+            }
+            _ => {}
+        }
+        if self.tree.selected != was {
+            self.cues.push(Cue::TreeMoved);
+        }
+        true
     }
 
     pub fn take_cues(&mut self) -> Vec<Cue> {
@@ -274,6 +444,7 @@ impl EditorState {
             Mode::Find | Mode::Replace => self.apply_find(action, pending),
             Mode::Picker => self.apply_picker(action, pending),
             Mode::Menu => self.apply_menu(action, pending),
+            Mode::Tree => self.apply_tree(action, pending),
             Mode::Normal => self.apply_normal(action, pending),
         };
         if let Some(doc) = self.tabs.get_mut(self.active) {
@@ -456,6 +627,7 @@ impl EditorState {
                     self.status = "rust beautifier off".to_string();
                 }
             }
+            Action::ToggleProjectView => self.toggle_project(),
             Action::ToggleJsonView => {
                 let doc = &mut self.tabs[self.active];
                 if !doc.is_json() {
@@ -756,6 +928,16 @@ impl EditorState {
         for doc in &mut self.tabs {
             doc.set_graphics(on);
         }
+    }
+
+    pub fn move_pointer(&mut self, column: u16, row: u16) -> bool {
+        let before = self.tabs[self.active].image_hit(self.pointer);
+        self.pointer = Some((column, row));
+        before != self.tabs[self.active].image_hit(self.pointer)
+    }
+
+    pub fn clear_pointer(&mut self) {
+        self.pointer = None;
     }
 
     pub fn consider_json_offer(&mut self) {
@@ -1105,6 +1287,7 @@ impl EditorState {
         doc.dirty = false;
         self.mode = Mode::Normal;
         self.cues.push(Cue::Saved);
+        self.refresh_tree();
         let renamed = match old {
             Some(old) => match fs::remove_file(&old) {
                 Ok(()) => format!("renamed to {}", target),
@@ -1428,6 +1611,7 @@ impl EditorState {
                 None => skipped += 1,
             }
         }
+        self.refresh_tree();
         if saved + failed == 0 {
             self.status = if skipped == 0 {
                 "nothing to save".to_string()
@@ -2732,5 +2916,56 @@ mod tests {
         state.apply(Action::Newline);
         assert!(state.json.is_some(), "a reload of packed json asks again");
         assert_eq!(state.tabs[0].lines[0], "{\"c\":1}");
+    }
+
+    #[test]
+    fn the_project_panel_opens_on_the_active_file_folds_folders_and_opens_files() {
+        let dir = crate::tree::scratch::Dir::project();
+        let mut state = EditorState::new();
+        state.tree.root = dir.0.clone();
+        state.open_path(&dir.0.join("src/ui.rs").to_string_lossy());
+        state.take_cues();
+        state.apply(Action::ToggleProjectView);
+        assert!(state.tree.visible && matches!(state.mode, Mode::Tree));
+        assert_eq!(state.tree.selected_row().unwrap().name, "ui.rs", "it opens on the file being edited");
+        assert!(state.take_cues().contains(&Cue::PanelOpened));
+
+        state.apply(Action::InsertChar('x'));
+        assert_eq!(state.tabs[0].lines, vec![""], "typing in the panel does not edit the file");
+        state.apply(Action::Left);
+        assert_eq!(state.tree.selected_row().unwrap().name, "src");
+        state.take_cues();
+        state.apply(Action::Left);
+        assert!(!state.tree.rows[state.tree.selected].open);
+        assert_eq!(state.take_cues(), vec![Cue::Folded { row: 0, count: 3, open: false }]);
+        state.apply(Action::Newline);
+        assert_eq!(state.take_cues(), vec![Cue::Folded { row: 0, count: 3, open: true }]);
+
+        state.apply(Action::Down);
+        state.apply(Action::Right);
+        assert!(state.tree.selected_row().unwrap().open, "Right opens a folder");
+        state.apply(Action::Right);
+        assert_eq!(state.tree.selected_row().unwrap().name, "x.rs", "then steps into it");
+        state.apply(Action::Newline);
+        assert!(matches!(state.mode, Mode::Normal), "Enter on a file goes back to the text");
+        assert_eq!(state.tabs[state.active].name, "x.rs");
+        assert!(state.tree.visible);
+
+        state.apply(Action::ToggleProjectView);
+        assert!(matches!(state.mode, Mode::Tree), "Alt+1 from the text goes back to the panel");
+        state.apply(Action::ClearExtraCaret);
+        assert!(matches!(state.mode, Mode::Normal) && state.tree.visible, "Esc leaves the panel open");
+        state.apply(Action::ToggleProjectView);
+        state.take_cues();
+        state.apply(Action::ToggleProjectView);
+        assert!(!state.tree.visible && matches!(state.mode, Mode::Normal));
+        assert_eq!(state.take_cues(), vec![Cue::PanelClosed]);
+
+        state.click_tree(0);
+        assert!(state.take_cues().is_empty() && matches!(state.mode, Mode::Normal), "a hidden panel takes no clicks");
+        state.flip_project();
+        let readme = state.tree.index_of(&dir.0.join("README.md")).unwrap();
+        state.click_tree(readme);
+        assert_eq!(state.tabs[state.active].name, "README.md", "a click on a file opens it");
     }
 }

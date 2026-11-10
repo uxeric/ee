@@ -26,7 +26,7 @@ The project is `eoe`, the command is `ee`. Type it, jack in, edit text in neon.
 - [ -- ] plugin system not found (by design)
 ```
 
-`ee` is a plain-text editor for the terminal, built for [Omarchy](https://omarchy.org) (or whatever sub-optimal unix-like system you're running) and for people with WebStorm in their fingers. It does multi-cursor editing, renders markdown live while you write it, and in Ghostty previews a local PNG on that line, hides Rust type annotations by default to reduce it feeling “Like pouring acid in my eyes” --DHH, edits Word documents the same way, sends lines to the agent or shell next to it in [herdr](https://herdr.dev), and animates every move. It takes its colours from your Omarchy theme and follows it when you switch. `.env` files are coloured too, including `.env.local` and names like `app.env`, and <kbd>Ctrl</kbd>+<kbd>/</kbd> comments them with `#`.
+`ee` is a plain-text editor for the terminal, built for [Omarchy](https://omarchy.org) (or whatever sub-optimal unix-like system you're running) and for people with WebStorm in their fingers. It does multi-cursor editing, renders markdown live while you write it, and shows a local PNG while the pointer rests on its link, hides Rust type annotations by default to reduce it feeling “Like pouring acid in my eyes” --DHH, edits Word documents the same way, sends lines to the agent or shell next to it in [herdr](https://herdr.dev), and animates every move. It takes its colours from your Omarchy theme and follows it when you switch. `.env` files are coloured too, including `.env.local` and names like `app.env`, and <kbd>Ctrl</kbd>+<kbd>/</kbd> comments them with `#`.
 
 <img src="assets/readme/divider.svg" width="100%" alt="">
 
@@ -146,6 +146,7 @@ In the replace bar, <kbd>Tab</kbd> switches between the Find and Replace fields.
 | Save all | <kbd>Ctrl</kbd>+<kbd>S</kbd> / <kbd>Alt</kbd>+<kbd>S</kbd> |
 | Open or create a file: fuzzy-find files under the current folder, or type a path | <kbd>Ctrl</kbd>+<kbd>N</kbd> / <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>N</kbd> / <kbd>Alt</kbd>+<kbd>N</kbd> |
 | Open a recent file: the last 20 files you opened, newest first | <kbd>Ctrl</kbd>+<kbd>O</kbd> / <kbd>Alt</kbd>+<kbd>O</kbd> |
+| Project files: show the folder on the left, or move into it when it's already showing; press again to hide it | <kbd>Alt</kbd>+<kbd>1</kbd>, or click **ee** at the top left |
 | File structure: jump to a heading in a markdown or Word file | <kbd>Ctrl</kbd>+<kbd>F12</kbd> |
 | Command palette: every action, with its keys | <kbd>F1</kbd> / <kbd>Ctrl</kbd>+<kbd>Space</kbd>, or click **F1 command** at the bottom right |
 | Switch theme: Follow Omarchy, Neon, or any installed Omarchy theme, previewed as you move | <kbd>Alt</kbd>+<kbd>`</kbd> (<kbd>Ctrl</kbd>+<kbd>`</kbd> with the kitty keyboard protocol) |
@@ -156,6 +157,8 @@ In the replace bar, <kbd>Tab</kbd> switches between the Find and Replace fields.
 | Close tab | <kbd>Ctrl</kbd>+<kbd>F4</kbd> |
 | Go to line (`42`, or `42:7` for a column) | <kbd>Ctrl</kbd>+<kbd>G</kbd> / <kbd>Alt</kbd>+<kbd>G</kbd> |
 | Back / forward through your jumps, across tabs | <kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>←</kbd> / <kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>→</kbd> |
+
+The project panel lists the folder you started ee in, or the folder of the file you opened when that file is somewhere else. It opens on the file you're editing. In the panel, up and down move, <kbd>→</kbd> opens a folder and <kbd>←</kbd> closes it or goes to the folder above, <kbd>Enter</kbd> opens a folder or a file, a letter jumps to the next name that starts with it, and <kbd>Esc</kbd> goes back to the text with the panel still showing. Click a folder to open or close it, and click a file to open it. `.git` is left out.
 
 </details>
 

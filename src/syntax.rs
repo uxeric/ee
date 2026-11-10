@@ -332,7 +332,7 @@ mod engine {
     use super::{refuses, role_of, Role, MAX_BYTES};
     use std::cell::RefCell;
     use std::ops::Range;
-    use tree_sitter::{InputEdit, Parser, Point, Query, QueryCursor, StreamingIterator, Tree};
+    use tree_sitter::{InputEdit, Node, Parser, Point, Query, QueryCursor, StreamingIterator, Tree};
 
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
     pub enum Lang {
@@ -649,6 +649,11 @@ mod engine {
                 } else if let Some(tree) = self.parser.parse(&new_source, None) {
                     self.tree = tree;
                 }
+                if self.tree.root_node().has_error() {
+                    if let Some(tree) = reparse_from_error(&mut self.parser, &self.tree, &new_source) {
+                        self.tree = tree;
+                    }
+                }
             }
             self.source = new_source;
             self.lines = lines.to_vec();
@@ -849,6 +854,52 @@ mod engine {
 
     fn byte_of(starts: &[usize], src_len: usize, line: usize, len: usize) -> usize {
         if line >= len { src_len } else { starts.get(line).copied().unwrap_or(src_len) }
+    }
+
+    fn reparse_from_error(parser: &mut Parser, tree: &Tree, source: &str) -> Option<Tree> {
+        let (start_byte, start_position) = error_region_start(tree.root_node())?;
+        let end_byte = source.len();
+        if start_byte >= end_byte {
+            return None;
+        }
+        let end_position = end_point(source);
+        let mut tree = tree.clone();
+        tree.edit(&InputEdit {
+            start_byte,
+            old_end_byte: end_byte,
+            new_end_byte: end_byte,
+            start_position,
+            old_end_position: end_position,
+            new_end_position: end_position,
+        });
+        parser.parse(source, Some(&tree))
+    }
+
+    fn error_region_start(node: Node) -> Option<(usize, Point)> {
+        if !node.has_error() {
+            return None;
+        }
+        for i in 0..node.child_count() {
+            let child = node.child(i)?;
+            if child.has_error() {
+                return error_region_start(child);
+            }
+        }
+        Some((node.start_byte(), node.start_position()))
+    }
+
+    fn end_point(source: &str) -> Point {
+        let mut row = 0;
+        let mut column = 0;
+        for byte in source.bytes() {
+            if byte == b'\n' {
+                row += 1;
+                column = 0;
+            } else {
+                column += 1;
+            }
+        }
+        Point { row, column }
     }
 
     fn input_edit(old_lines: &[String], old_src: &str, new_lines: &[String], new_src: &str) -> Option<InputEdit> {
