@@ -113,7 +113,12 @@ fn render_picker(frame: &mut Frame, state: &EditorState, area: Rect) {
     if inner.height > 3 {
         let esc = if picker.kind == PickerKind::Themes { "put back" } else { "close" };
         let row = Rect::new(inner.x + 1, inner.y + inner.height - 1, inner.width.saturating_sub(2), 1);
-        crate::hud::hints(frame.buffer_mut(), row, &[("↑↓", "choose"), ("Enter", enter), ("Esc", esc)]);
+        let mut hints = vec![("↑↓", "choose"), ("Enter", enter)];
+        if picker.kind == PickerKind::Files {
+            hints.push(("Shift+Enter", "create"));
+        }
+        hints.push(("Esc", esc));
+        crate::hud::hints(frame.buffer_mut(), row, &hints);
     }
     if picker.shown.is_empty() {
         let hint = match picker.kind {
@@ -362,31 +367,40 @@ fn render_tree(frame: &mut Frame, state: &EditorState, panel: Rect) {
     }
 }
 
-/// The tab bar's spans, and for each tab the column of its `×` relative to the bar.
-fn tab_bar(state: &EditorState) -> (Vec<Span<'static>>, Vec<u16>) {
+struct TabMark {
+    start: u16,
+    close: u16,
+    end: u16,
+}
+
+/// The tab bar's spans, and for each tab the columns of its label and its `×`.
+fn tab_bar(state: &EditorState) -> (Vec<Span<'static>>, Vec<TabMark>) {
     let p = theme::pal();
     let mut spans: Vec<Span> = vec![Span::styled(" ee ", theme::block(p.hot)), Span::raw(" ")];
-    let mut closes = Vec::with_capacity(state.tabs.len());
+    let mut marks = Vec::with_capacity(state.tabs.len());
     let at = |spans: &[Span]| spans.iter().map(|s| s.width()).sum::<usize>() as u16;
     for (i, tab) in state.tabs.iter().enumerate() {
+        let start = at(&spans);
         if i == state.active {
             let label = if tab.dirty { format!(" {} ● ", tab.name) } else { format!(" {} ", tab.name) };
             let style = theme::block(p.ice);
             spans.push(Span::styled(label, style));
-            closes.push(at(&spans));
+            let close = at(&spans);
             spans.push(Span::styled("× ", style));
+            marks.push(TabMark { start, close, end: at(&spans) });
         } else {
             spans.push(Span::styled(format!(" {}", tab.name), theme::dim()));
             if tab.dirty {
                 spans.push(Span::styled(" ●", Style::default().fg(p.amber)));
             }
             spans.push(Span::raw(" "));
-            closes.push(at(&spans));
+            let close = at(&spans);
             spans.push(Span::styled("× ", theme::dim()));
+            marks.push(TabMark { start, close, end: at(&spans) });
         }
         spans.push(Span::raw(" "));
     }
-    (spans, closes)
+    (spans, marks)
 }
 
 /// The tab whose `×` sits at (`x`, `y`), when that `×` is on screen.
@@ -394,8 +408,25 @@ pub fn tab_close_hit(area: Rect, state: &EditorState, x: u16, y: u16) -> Option<
     if y != area.y || x < area.x {
         return None;
     }
-    let (_, closes) = tab_bar(state);
-    closes.iter().position(|&c| area.x.checked_add(c) == Some(x) && c < area.width)
+    let (_, marks) = tab_bar(state);
+    marks.iter().position(|m| area.x.checked_add(m.close) == Some(x) && m.close < area.width)
+}
+
+/// The tab whose name (not its `×`) sits at (`x`, `y`), when that part is on screen.
+pub fn tab_hit(area: Rect, state: &EditorState, x: u16, y: u16) -> Option<usize> {
+    if y != area.y || x < area.x {
+        return None;
+    }
+    let (_, marks) = tab_bar(state);
+    marks.iter().position(|m| {
+        let Some(start) = area.x.checked_add(m.start) else {
+            return false;
+        };
+        let Some(end) = area.x.checked_add(m.end.min(area.width)) else {
+            return false;
+        };
+        m.start < area.width && x >= start && x < end && area.x.checked_add(m.close) != Some(x)
+    })
 }
 
 fn render_tab_bar(frame: &mut Frame, state: &EditorState, area: Rect) {
@@ -1602,6 +1633,16 @@ mod tests {
         }
         assert_eq!(tab_close_hit(area, &state, marks[1] - 2, 0), None, "the name is not the close mark");
         assert_eq!(tab_close_hit(Rect::new(0, 0, marks[2], 4), &state, marks[2], 0), None, "a clipped × cannot be hit");
+        let col_of = |needle: &str| bar[..bar.find(needle).unwrap_or_else(|| panic!("{needle} missing from {bar}"))].chars().count() as u16;
+        for (tab, name) in ["a.md", "bb.md", "c.md"].iter().enumerate() {
+            let x = col_of(name);
+            assert_eq!(tab_hit(area, &state, x, 0), Some(tab), "{name} in {bar}");
+            assert_eq!(tab_hit(area, &state, x, 1), None, "only the tab bar row");
+        }
+        assert_eq!(tab_hit(area, &state, col_of("●"), 0), Some(0), "the dirty mark belongs to the tab");
+        assert_eq!(tab_hit(area, &state, marks[1], 0), None, "the close mark is not a tab switch");
+        assert_eq!(tab_hit(area, &state, 1, 0), None, "the ee logo is not a tab");
+        assert_eq!(tab_hit(Rect::new(0, 0, marks[2], 4), &state, marks[2], 0), None, "a clipped tab cannot be hit");
     }
 
     #[test]

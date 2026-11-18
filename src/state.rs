@@ -825,6 +825,26 @@ impl EditorState {
         true
     }
 
+    /// A click on tab `index`'s name. Switches to that file. A click on the
+    /// tab already showing only returns focus to the text. Returns true so
+    /// the editor stays open.
+    pub fn select_tab(&mut self, index: usize) -> bool {
+        if index >= self.tabs.len() || self.reload.is_some() || self.update.is_some() {
+            return true;
+        }
+        self.focus_editor();
+        if index == self.active {
+            return true;
+        }
+        self.pending = None;
+        self.status.clear();
+        self.alert = None;
+        self.mark_jump();
+        self.cues.push(if index > self.active { Cue::TabNext } else { Cue::TabPrev });
+        self.active = index;
+        true
+    }
+
     pub fn note_new_file(&mut self, name: &str) {
         self.status = format!("new file: {} (saving creates it)", name);
     }
@@ -1168,6 +1188,14 @@ impl EditorState {
             Action::OpenFile => self.open_picker(PickerKind::Files),
             Action::OpenRecent => self.open_picker(PickerKind::Recent),
             Action::SwitchTheme => self.open_picker(PickerKind::Themes),
+            Action::StartNewLine if picker.kind == PickerKind::Files => {
+                let typed = picker.input.trim().to_string();
+                if !typed.is_empty() {
+                    self.picker = None;
+                    self.mode = Mode::Normal;
+                    self.open_path(&expand_home(&typed));
+                }
+            }
             Action::Newline => {
                 let picker = self.picker.take().unwrap();
                 self.mode = Mode::Normal;
@@ -2388,6 +2416,20 @@ mod tests {
         assert_eq!(state.picker.as_ref().unwrap().shown.len(), 1, "the decoy matches what was typed");
         state.apply(Action::Newline);
         assert_eq!(state.tabs[0].name, "typed.md", "a typed path wins over a matching entry");
+
+        let mut state = EditorState::new();
+        state.apply(Action::OpenFile);
+        let picker = state.picker.as_mut().unwrap();
+        picker.items = vec![PickItem { label: "plan/document.md".to_string(), detail: String::new(), target: PickTarget::File(dir.path("decoy.md")) }];
+        picker.refilter();
+        state.apply(Action::StartNewLine);
+        assert!(matches!(state.mode, Mode::Picker), "Shift+Enter with nothing typed keeps the picker open");
+        type_text(&mut state, "docmd");
+        assert_eq!(state.picker.as_ref().unwrap().shown.len(), 1, "the decoy matches what was typed");
+        state.apply(Action::StartNewLine);
+        assert!(matches!(state.mode, Mode::Normal));
+        assert_eq!(state.tabs[0].name, "docmd", "Shift+Enter opens the typed name, not the highlighted match");
+        assert_eq!(state.tabs[0].lines, vec![""]);
 
         state.apply(Action::OpenFile);
         let picker = state.picker.as_mut().unwrap();

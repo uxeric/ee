@@ -144,7 +144,7 @@ In the replace bar, <kbd>Tab</kbd> switches between the Find and Replace fields.
 | Action | Key |
 |---|---|
 | Save all | <kbd>Ctrl</kbd>+<kbd>S</kbd> / <kbd>Alt</kbd>+<kbd>S</kbd> |
-| Open or create a file: fuzzy-find files under the current folder, or type a path | <kbd>Ctrl</kbd>+<kbd>N</kbd> / <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>N</kbd> / <kbd>Alt</kbd>+<kbd>N</kbd> |
+| Open or create a file: fuzzy-find files under the current folder, or type a path. <kbd>Enter</kbd> opens the highlighted match; <kbd>Shift</kbd>+<kbd>Enter</kbd> opens exactly what you typed, as a new file when it does not exist | <kbd>Ctrl</kbd>+<kbd>N</kbd> / <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>N</kbd> / <kbd>Alt</kbd>+<kbd>N</kbd> |
 | Open a recent file: the last 20 files you opened, newest first | <kbd>Ctrl</kbd>+<kbd>O</kbd> / <kbd>Alt</kbd>+<kbd>O</kbd> |
 | Project files: show the folder on the left, or move into it when it's already showing; press again to hide it | <kbd>Alt</kbd>+<kbd>1</kbd>, or click **ee** at the top left |
 | File structure: jump to a heading in a markdown or Word file | <kbd>Ctrl</kbd>+<kbd>F12</kbd> |
@@ -152,6 +152,7 @@ In the replace bar, <kbd>Tab</kbd> switches between the Find and Replace fields.
 | Switch theme: Follow Omarchy, Neon, or any installed Omarchy theme, previewed as you move | <kbd>Alt</kbd>+<kbd>`</kbd> (<kbd>Ctrl</kbd>+<kbd>`</kbd> with the kitty keyboard protocol) |
 | Last edit location | <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>Backspace</kbd> |
 | Rename the file, or save an untitled tab under a name | <kbd>Shift</kbd>+<kbd>F6</kbd> |
+| Switch to a tab | click its name |
 | Next tab | <kbd>Ctrl</kbd>+<kbd>]</kbd> / <kbd>Alt</kbd>+<kbd>→</kbd> / <kbd>Ctrl</kbd>+<kbd>PageDown</kbd> |
 | Previous tab | <kbd>Ctrl</kbd>+<kbd>[</kbd> / <kbd>Alt</kbd>+<kbd>←</kbd> / <kbd>Ctrl</kbd>+<kbd>PageUp</kbd> |
 | Close tab | <kbd>Ctrl</kbd>+<kbd>F4</kbd>, or click the tab's **×** |

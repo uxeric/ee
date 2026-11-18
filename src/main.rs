@@ -207,6 +207,29 @@ fn context_mouse(state: &mut EditorState, area: Rect, kind: MouseEventKind, colu
     true
 }
 
+/// A click on a tab name switches to it. A click on its `×` closes it.
+/// `Some(false)` means the last tab closed and ee should quit. A drag along
+/// the tab row is swallowed so it does not select to the end of the file.
+fn tab_mouse(state: &mut EditorState, area: Rect, kind: MouseEventKind, column: u16, row: u16) -> Option<bool> {
+    if !matches!(state.mode, state::Mode::Normal | state::Mode::Tree) {
+        return None;
+    }
+    let on_bar = row == area.y && area.width > 0 && column >= area.x && column < area.x.saturating_add(area.width);
+    if kind == MouseEventKind::Drag(MouseButton::Left) && on_bar {
+        return Some(true);
+    }
+    if kind != MouseEventKind::Down(MouseButton::Left) {
+        return None;
+    }
+    if let Some(index) = ui::tab_close_hit(area, state, column, row) {
+        return Some(state.close_tab_at(index));
+    }
+    if let Some(index) = ui::tab_hit(area, state, column, row) {
+        return Some(state.select_tab(index));
+    }
+    None
+}
+
 fn tree_mouse(state: &mut EditorState, area: Rect, kind: MouseEventKind, column: u16, row: u16) -> bool {
     if state.update.is_some() || !matches!(state.mode, state::Mode::Normal | state::Mode::Tree) {
         return false;
@@ -363,97 +386,75 @@ fn run(terminal: &mut Terminal<CrosstermBackend<Stdout>>, state: &mut EditorStat
                     None => true,
                 }
             }
-            Event::Mouse(mouse)
-                if mouse.kind == MouseEventKind::Down(MouseButton::Left)
-                    && take_context_click(state, area, mouse.column, mouse.row) =>
-            {
-                true
-            }
-            Event::Mouse(_) | Event::Paste(_) if state.reload.is_some() => true,
-            Event::Mouse(mouse) if context_mouse(state, area, mouse.kind, mouse.column, mouse.row) => true,
-            Event::Mouse(mouse) if tree_mouse(state, area, mouse.kind, mouse.column, mouse.row) => true,
-            Event::Mouse(mouse)
-                if mouse.kind == MouseEventKind::Down(MouseButton::Left)
-                    && matches!(state.mode, state::Mode::Normal | state::Mode::Tree)
-                    && ui::tab_close_hit(area, state, mouse.column, mouse.row).is_some() =>
-            {
-                let index = ui::tab_close_hit(area, state, mouse.column, mouse.row).unwrap_or(state.active);
-                state.close_tab_at(index)
-            }
-            Event::Mouse(mouse)
-                if mouse.kind == MouseEventKind::Down(MouseButton::Left)
-                    && ui::command_button(area, state).is_some_and(|b| b.contains(ratatui::layout::Position::new(mouse.column, mouse.row))) =>
-            {
-                state.apply(Action::FindAction)
-            }
-            Event::Mouse(mouse)
-                if mouse.kind == MouseEventKind::Down(MouseButton::Left)
-                    && mouse.modifiers.contains(KeyModifiers::ALT) =>
-            {
-                let editor_area = ui::editor_rect(area, state);
-                if let Some((line, col)) =
-                    ui::mouse_to_doc(editor_area, mouse.column, mouse.row, &state.tabs[state.active])
+            Event::Paste(_) if state.reload.is_some() => true,
+            Event::Mouse(mouse) => {
+                if mouse.kind == MouseEventKind::Down(MouseButton::Left) && take_context_click(state, area, mouse.column, mouse.row) {
+                    true
+                } else if state.reload.is_some() {
+                    true
+                } else if context_mouse(state, area, mouse.kind, mouse.column, mouse.row) {
+                    true
+                } else if tree_mouse(state, area, mouse.kind, mouse.column, mouse.row) {
+                    true
+                } else if let Some(keep) = tab_mouse(state, area, mouse.kind, mouse.column, mouse.row) {
+                    keep
+                } else if mouse.kind == MouseEventKind::Down(MouseButton::Left)
+                    && ui::command_button(area, state).is_some_and(|b| b.contains(ratatui::layout::Position::new(mouse.column, mouse.row)))
                 {
-                    state.apply(Action::AddCaretAt(line, col));
-                }
-                true
-            }
-            Event::Mouse(mouse)
-                if mouse.kind == MouseEventKind::Down(MouseButton::Left)
-                    && mouse.modifiers.contains(KeyModifiers::CONTROL) =>
-            {
-                let editor_area = ui::editor_rect(area, state);
-                match ui::link_at(editor_area, mouse.column, mouse.row, &state.tabs[state.active]) {
-                    Some(url) => state.apply(Action::FollowLink(url)),
-                    None => true,
-                }
-            }
-            Event::Mouse(mouse)
-                if matches!(state.mode, state::Mode::Normal)
-                    && matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left) | MouseEventKind::Drag(MouseButton::Left)) =>
-            {
-                let editor_area = ui::editor_rect(area, state);
-                let doc = &state.tabs[state.active];
-                let below = mouse.row >= editor_area.y + editor_area.height;
-                let at = ui::mouse_to_doc(editor_area, mouse.column, mouse.row, doc).or_else(|| {
-                    (mouse.row >= editor_area.y && !below || mouse.kind != MouseEventKind::Down(MouseButton::Left))
-                        .then(|| (doc.lines.len() - 1, usize::MAX))
-                });
-                match (mouse.kind, at) {
-                    (MouseEventKind::Drag(_), Some((line, col))) => state.apply(Action::DragTo(line, col)),
-                    (_, Some((line, col))) if mouse.modifiers.contains(KeyModifiers::SHIFT) => {
-                        state.apply(Action::ShiftClickAt(line, col))
+                    state.apply(Action::FindAction)
+                } else if mouse.kind == MouseEventKind::Down(MouseButton::Left) && mouse.modifiers.contains(KeyModifiers::ALT) {
+                    let editor_area = ui::editor_rect(area, state);
+                    if let Some((line, col)) = ui::mouse_to_doc(editor_area, mouse.column, mouse.row, &state.tabs[state.active]) {
+                        state.apply(Action::AddCaretAt(line, col));
                     }
-                    (_, Some((line, col))) => {
-                        let now = Instant::now();
-                        let clicks = match last_click {
-                            Some((t, (l, _), n)) if l == line && now.duration_since(t) < Duration::from_millis(400) => (n % 3) + 1,
-                            _ => 1,
-                        };
-                        last_click = Some((now, (line, col), clicks));
-                        state.apply(Action::ClickAt(line, col, clicks))
+                    true
+                } else if mouse.kind == MouseEventKind::Down(MouseButton::Left) && mouse.modifiers.contains(KeyModifiers::CONTROL) {
+                    let editor_area = ui::editor_rect(area, state);
+                    match ui::link_at(editor_area, mouse.column, mouse.row, &state.tabs[state.active]) {
+                        Some(url) => state.apply(Action::FollowLink(url)),
+                        None => true,
                     }
-                    _ => true,
-                }
-            }
-            Event::Mouse(mouse) if matches!(mouse.kind, MouseEventKind::ScrollUp | MouseEventKind::ScrollDown) => {
-                let lines = if mouse.kind == MouseEventKind::ScrollUp { -3 } else { 3 };
-                if mouse.modifiers.contains(KeyModifiers::SHIFT) {
-                    ui::scroll_sideways(area, state, lines * 2);
+                } else if matches!(state.mode, state::Mode::Normal)
+                    && matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left) | MouseEventKind::Drag(MouseButton::Left))
+                {
+                    let editor_area = ui::editor_rect(area, state);
+                    let doc = &state.tabs[state.active];
+                    let below = mouse.row >= editor_area.y + editor_area.height;
+                    let at = ui::mouse_to_doc(editor_area, mouse.column, mouse.row, doc).or_else(|| {
+                        (mouse.row >= editor_area.y && !below || mouse.kind != MouseEventKind::Down(MouseButton::Left))
+                            .then(|| (doc.lines.len() - 1, usize::MAX))
+                    });
+                    match (mouse.kind, at) {
+                        (MouseEventKind::Drag(_), Some((line, col))) => state.apply(Action::DragTo(line, col)),
+                        (_, Some((line, col))) if mouse.modifiers.contains(KeyModifiers::SHIFT) => state.apply(Action::ShiftClickAt(line, col)),
+                        (_, Some((line, col))) => {
+                            let now = Instant::now();
+                            let clicks = match last_click {
+                                Some((t, (l, _), n)) if l == line && now.duration_since(t) < Duration::from_millis(400) => (n % 3) + 1,
+                                _ => 1,
+                            };
+                            last_click = Some((now, (line, col), clicks));
+                            state.apply(Action::ClickAt(line, col, clicks))
+                        }
+                        _ => true,
+                    }
+                } else if matches!(mouse.kind, MouseEventKind::ScrollUp | MouseEventKind::ScrollDown) {
+                    let lines = if mouse.kind == MouseEventKind::ScrollUp { -3 } else { 3 };
+                    if mouse.modifiers.contains(KeyModifiers::SHIFT) {
+                        ui::scroll_sideways(area, state, lines * 2);
+                    } else {
+                        ui::scroll_view(area, state, lines);
+                    }
+                    true
+                } else if matches!(mouse.kind, MouseEventKind::ScrollLeft | MouseEventKind::ScrollRight) {
+                    ui::scroll_sideways(area, state, if mouse.kind == MouseEventKind::ScrollLeft { -6 } else { 6 });
+                    true
+                } else if mouse.kind == MouseEventKind::Moved && hover_same && !motion.is_animating() && !quitting {
+                    draw_frame = false;
+                    true
                 } else {
-                    ui::scroll_view(area, state, lines);
+                    true
                 }
-                true
-            }
-            Event::Mouse(mouse) if matches!(mouse.kind, MouseEventKind::ScrollLeft | MouseEventKind::ScrollRight) => {
-                ui::scroll_sideways(area, state, if mouse.kind == MouseEventKind::ScrollLeft { -6 } else { 6 });
-                true
-            }
-            Event::Mouse(mouse)
-                if mouse.kind == MouseEventKind::Moved && hover_same && !motion.is_animating() && !quitting =>
-            {
-                draw_frame = false;
-                true
             }
             Event::FocusLost => {
                 state.clear_pointer();
@@ -602,5 +603,99 @@ mod tests {
         assert_eq!(state.tabs[0].lines[0], "world", "Cut removes the selection it opened on");
         assert!(state.status.starts_with("copied"), "{}", state.status);
         assert!(matches!(state.mode, Mode::Normal));
+    }
+
+    fn tab_row(state: &EditorState) -> String {
+        let mut t = ratatui::Terminal::new(ratatui::backend::TestBackend::new(80, 6)).unwrap();
+        t.draw(|f| ui::render(f, state)).unwrap();
+        let buf = t.backend().buffer();
+        (0..80).map(|x| buf.cell((x, 0)).unwrap().symbol().to_string()).collect()
+    }
+
+    #[test]
+    fn clicking_a_tab_name_switches_to_that_file_and_the_close_mark_still_closes_it() {
+        use state::Mode;
+        let area = Rect::new(0, 0, 80, 6);
+        let left = MouseEventKind::Down(MouseButton::Left);
+        let mut state = EditorState::new();
+        state.tabs = vec![
+            Document::with_content("alpha.md", "aaa"),
+            Document::with_content("beta.md", "bbb"),
+            Document::with_content("gamma.md", "ccc"),
+        ];
+        let name_at = |state: &EditorState, name: &str| {
+            let row = tab_row(state);
+            let byte = row.find(name).unwrap_or_else(|| panic!("{name} is not on the tab bar"));
+            row[..byte].chars().count() as u16
+        };
+        let close_at = |state: &EditorState, n: usize| {
+            tab_row(state).chars().enumerate().filter(|&(_, c)| c == '×').nth(n).unwrap().0 as u16
+        };
+
+        let beta = name_at(&state, "beta.md");
+        assert_eq!(tab_mouse(&mut state, area, left, beta, 0), Some(true));
+        assert_eq!(state.tabs[state.active].lines[0], "bbb");
+
+        state.mode = Mode::Tree;
+        let beta = name_at(&state, "beta.md");
+        assert_eq!(tab_mouse(&mut state, area, left, beta, 0), Some(true));
+        assert_eq!(state.tabs[state.active].lines[0], "bbb", "clicking the open tab stays on it");
+        assert!(matches!(state.mode, Mode::Normal), "clicking the open tab returns to the text");
+
+        let gamma = name_at(&state, "gamma.md");
+        assert_eq!(tab_mouse(&mut state, area, left, gamma, 0), Some(true));
+        assert_eq!(state.tabs[state.active].lines[0], "ccc");
+        state.apply(Action::NavigateBack);
+        assert_eq!(state.tabs[state.active].lines[0], "bbb", "back returns to the tab the click left");
+
+        let alpha = name_at(&state, "alpha.md");
+        assert_eq!(tab_mouse(&mut state, area, MouseEventKind::Drag(MouseButton::Left), alpha, 0), Some(true));
+        assert!(state.tabs[state.active].selection.is_none(), "a drag along the tabs does not select the file");
+        assert_eq!(state.tabs[state.active].lines[0], "bbb");
+        let editor = ui::editor_rect(area, &state);
+        assert_eq!(tab_mouse(&mut state, area, MouseEventKind::Drag(MouseButton::Left), editor.x, editor.y), None);
+
+        state.mode = Mode::Find;
+        assert_eq!(tab_mouse(&mut state, area, left, alpha, 0), None, "the find bar keeps the click");
+        assert_eq!(state.tabs[state.active].lines[0], "bbb");
+        state.mode = Mode::Normal;
+
+        state.offer_update("a".into(), "b".into());
+        assert_eq!(tab_mouse(&mut state, area, left, alpha, 0), Some(true));
+        assert_eq!(state.tabs[state.active].lines[0], "bbb", "the update prompt keeps the tab");
+        state.update = None;
+
+        state.tabs[0].dirty = true;
+        state.tabs[1].dirty = true;
+        state.active = 0;
+        state.apply(Action::CloseTab);
+        assert!(state.status.contains("unsaved"));
+        let beta = name_at(&state, "beta.md");
+        assert_eq!(tab_mouse(&mut state, area, left, beta, 0), Some(true));
+        assert_eq!(state.tabs[state.active].lines[0], "bbb");
+        assert!(state.apply(Action::CloseTab));
+        assert_eq!(state.tabs.len(), 3, "leaving the tab drops its close confirmation");
+        assert!(state.status.contains("unsaved"));
+
+        let gamma_x = close_at(&state, 2);
+        assert_eq!(tab_mouse(&mut state, area, left, gamma_x, 0), Some(true));
+        assert_eq!(state.tabs.iter().map(|d| d.name.as_str()).collect::<Vec<_>>(), ["alpha.md", "beta.md"]);
+        assert_eq!(state.tabs[state.active].name, "beta.md", "a clean tab in the background closes in place");
+
+        let alpha_x = close_at(&state, 0);
+        assert_eq!(tab_mouse(&mut state, area, left, alpha_x, 0), Some(true));
+        assert_eq!(state.tabs[state.active].name, "alpha.md", "an unsaved tab comes forward and asks");
+        assert!(state.status.contains("unsaved"));
+        assert_eq!(tab_mouse(&mut state, area, left, alpha_x, 1), None, "the row under the tabs is the file");
+
+        let mut state = EditorState::new();
+        state.tabs = vec![Document::with_content("only.md", "z")];
+        state.mode = Mode::Find;
+        let only = name_at(&state, "only.md");
+        assert_eq!(tab_mouse(&mut state, area, left, only, 0), None);
+        state.mode = Mode::Normal;
+        let only_x = close_at(&state, 0);
+        assert_eq!(tab_mouse(&mut state, area, left, only_x, 0), Some(false), "the last tab's × quits");
+        assert_eq!(state.tabs.len(), 1);
     }
 }
