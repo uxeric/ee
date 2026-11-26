@@ -2,9 +2,9 @@
 
 <img src="assets/readme/hero.svg" width="100%" alt="ee opens and jacks in behind a neon scan; a markdown file renders live, a task typed on the caret line turns into a checkbox as the caret leaves it, and the file-structure popup jumps to the Crew heading and back.">
 
-# Eric's Own Editor
+# Eric's Own Editor - TUI Editor for the AI Age
 
-**A keyboard-first plain-text editor that boots like a movie hack.**<br>
+**A keyboard-first TUI text editor that boots like a movie hack.**<br>
 The project is `eoe`, the command is `ee`. Type it, jack in, edit text in neon.
 
 <a href="#jack-in"><img alt="built with Rust" src="https://img.shields.io/badge/built_with-Rust-ff2a6d?style=for-the-badge&logo=rust&logoColor=white&labelColor=0b0620"></a>
@@ -20,13 +20,17 @@ The project is `eoe`, the command is `ee`. Type it, jack in, edit text in neon.
 </div>
 
 ```diff
-+ [ ok ] mounting buffers
-+ [ ok ] calibrating neon
-+ [ ok ] ignoring your opinions
-- [ -- ] plugin system not found (by design)
++ [ ok ] multi-cursor editing
++ [ ok ] live markdown rendering
++ [ ok ] hides Rust type annotations
++ [ ok ] natively edit Word documents
++ [ ok ] send text to Herdr
++ [ ok ] matches your Omarchy theme
++ [ ok ] auto updates
+- [ -- ] complicated key bindings
 ```
 
-`ee` is a plain-text editor for the terminal, built for [Omarchy](https://omarchy.org) (or whatever sub-optimal unix-like system you're running) and for people with WebStorm in their fingers. It does multi-cursor editing, renders markdown live while you write it, and shows a local PNG while the pointer rests on its link, hides Rust type annotations by default to reduce it feeling “Like pouring acid in my eyes” --DHH, edits Word documents the same way, sends lines to the agent or shell next to it in [herdr](https://herdr.dev), and animates every move. It takes its colours from your Omarchy theme and follows it when you switch. `.env` files are coloured too, including `.env.local` and names like `app.env`, and <kbd>Ctrl</kbd>+<kbd>/</kbd> comments them with `#`.
+`ee` is a plain-text editor for the terminal, built for [Omarchy](https://omarchy.org) (or whatever sub-optimal unix-like system you're running) and for people with WebStorm in their fingers. It animates every move in a cool hollywood hacking movie way. It takes its colours from your Omarchy theme and follows it when you switch.
 
 <img src="assets/readme/divider.svg" width="100%" alt="">
 
@@ -37,7 +41,7 @@ curl -fsSL https://raw.githubusercontent.com/uxeric/ee/HEAD/install.sh | bash
 ```
 
 It builds `ee` from source into `~/.local/bin/ee`, no root needed, and offers to install Rust if you don't have it. On Omarchy it also adds `ee` to the app launcher. In Files, selecting a file that has no default application offers **Open with ee**. A file that already has one keeps it. Reopen Files after installing to see the item.
-
++ [ ok ] matches your Omarchy theme
 `ee` checks for updates in the background and offers to restart into a new version; `ee --update` updates by hand and `ee --version` shows what you have. You need a terminal that passes `Ctrl` and `Alt` through: Alacritty, kitty, Ghostty, foot and WezTerm all do.
 
 ## Keys
@@ -63,7 +67,7 @@ Terminals can't tell `Ctrl+X` from `Ctrl+Shift+X`, so WebStorm's `Ctrl+Shift+let
 
 <details>
 <summary><b>Editing and movement</b></summary>
-
++ [ ok ] matches your Omarchy theme
 | Action | Primary | Fallback |
 |---|---|---|
 | Quit (press twice if there are unsaved changes) | <kbd>Ctrl</kbd>+<kbd>Q</kbd> | <kbd>Alt</kbd>+<kbd>Q</kbd> |
