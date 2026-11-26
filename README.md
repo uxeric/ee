@@ -203,6 +203,7 @@ These code-editor keys are bound and show "not applicable":
 > **Will you include a plugin system?**<br>
 > Debating it. You can fork and edit the codebase and extend it however you like for the time being.
 boots
+
 > [!WARNING]
 > **Your design choices are terrible.**<br>
 > Yeah, they probably are. Take 5 minutes with an LLM and make it your own.
