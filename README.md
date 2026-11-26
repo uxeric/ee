@@ -2,7 +2,7 @@
 
 <img src="assets/readme/hero.svg" width="100%" alt="ee opens and jacks in behind a neon scan; a markdown file renders live, a task typed on the caret line turns into a checkbox as the caret leaves it, and the file-structure popup jumps to the Crew heading and back.">
 
-# Eric's Own Editor - TUI Editor for the AI Age
+# Eric's Own Editor - Terminal Base Editor for the AI Age
 
 **A keyboard-first TUI text editor that animate like a cyberpunk movie.**<br>
 The project is `eoe`, the command is `ee`. Type it, jack in, edit text in neon.
@@ -31,21 +31,24 @@ The project is `eoe`, the command is `ee`. Type it, jack in, edit text in neon.
 - [ -- ] complicated key bindings
 ```
 
-`ee` is a plain-text editor for the terminal, built for [Omarchy](https://omarchy.org) (or whatever sub-optimal unix-like system you're running) and for people with WebStorm in their fingers. It animates every move in a cool hollywood hacking movie way. It takes its colours from your Omarchy theme and follows it when you switch.
+`ee` is a plain-text editor for the terminal, built for [Omarchy](https://omarchy.org) (or whatever unix-like system you're running) and for people with WebStorm in their fingers. It animates every move in a cool hollywood hacking movie way. It takes its colours from your Omarchy theme and follows it when you switch.
 
 <img src="assets/readme/divider.svg" width="100%" alt="">
 
-## Jack in
+## Install
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/uxeric/ee/HEAD/install.sh | bash
 ```
 
-It builds `ee` from source into `~/.local/bin/ee`, no root needed, and offers to install Rust if you don't have it. On Omarchy it also adds `ee` to the app launcher. In Files, selecting a file that has no default application offers **Open with ee**. A file that already has one keeps it. Reopen Files after installing to see the item.
-+ [ ok ] matches your Omarchy theme
-`ee` checks for updates in the background and offers to restart into a new version; `ee --update` updates by hand and `ee --version` shows what you have. You need a terminal that passes `Ctrl` and `Alt` through: Alacritty, kitty, Ghostty, foot and WezTerm all do.
+- `ee` checks for updates in the background and offers to restart into a new version; `ee --update` updates by hand and `ee --version` shows what you have.
+- It builds `ee` from source into `~/.local/bin/ee`, no root needed, and offers to install Rust if you don't have it. 
+- On Omarchy adds `ee` to the app launcher.
+- In Files, selecting a file that has no default application offers **Open with ee**.
 
 ## Keys
+
+You need a terminal that passes `Ctrl` and `Alt` through: Alacritty, kitty, Ghostty, foot and WezTerm all do.
 
 Terminals can't tell `Ctrl+X` from `Ctrl+Shift+X`, so WebStorm's `Ctrl+Shift+letter` actions live on the plain `Ctrl+letter` key. Where that key was taken, the action moved to `Alt+Shift+letter`. Most `Ctrl` keys also answer to `Alt`, which you can turn off in `~/.config/eoe/config.toml`.
 
