@@ -4,7 +4,7 @@
 
 # Eric's Own Editor - TUI Editor for the AI Age
 
-**A keyboard-first TUI text editor that boots like a movie hack.**<br>
+**A keyboard-first TUI text editor that animate like a cyberpunk movie.**<br>
 The project is `eoe`, the command is `ee`. Type it, jack in, edit text in neon.
 
 <a href="#jack-in"><img alt="built with Rust" src="https://img.shields.io/badge/built_with-Rust-ff2a6d?style=for-the-badge&logo=rust&logoColor=white&labelColor=0b0620"></a>
@@ -22,10 +22,11 @@ The project is `eoe`, the command is `ee`. Type it, jack in, edit text in neon.
 ```diff
 + [ ok ] multi-cursor editing
 + [ ok ] live markdown rendering
-+ [ ok ] hides Rust type annotations
-+ [ ok ] natively edit Word documents
-+ [ ok ] send text to Herdr
++ [ ok ] hides rust type annotations
++ [ ok ] natively edit word documents
++ [ ok ] send text to herdr
 + [ ok ] matches your Omarchy theme
++ [ ok ] folder navigator + tabs
 + [ ok ] auto updates
 - [ -- ] complicated key bindings
 ```
@@ -112,7 +113,7 @@ Terminals can't tell `Ctrl+X` from `Ctrl+Shift+X`, so WebStorm's `Ctrl+Shift+let
 <summary><b>Multi-cursor</b></summary>
 
 | Action | Key |
-|---|---|
+|---|---|a. Did you read the name of the editor? Eric's Own Editor, I can do what I want, but then so can you.
 | Add caret up / down | <kbd>Ctrl</kbd>+<kbd>↑</kbd> / <kbd>Ctrl</kbd>+<kbd>↓</kbd> |
 | Place the caret / select a word / select a line | click / double-click / triple-click |
 | Select with the mouse | drag, or <kbd>Shift</kbd> + click to extend |
@@ -200,19 +201,19 @@ These code-editor keys are bound and show "not applicable":
 
 > [!NOTE]
 > **Will you include a plugin system?**<br>
-> Nope. Fork and edit the codebase and extend it however you like.
-
+> Debating it. You can fork and edit the codebase and extend it however you like for the time being.
+boots
 > [!WARNING]
 > **Your design choices are terrible.**<br>
-> Yeah, probably. Take 5 minutes with an LLM and make it your own.
+> Yeah, they probably are. Take 5 minutes with an LLM and make it your own.
 
 > [!CAUTION]
 > **It's too cyberpunk, and it has too many useless animations.**<br>
-> Yup.
+> That's not wrong, though all animations should be non-blocking.
 
 > [!TIP]
 > **Do you know that Easy Editor has dibs on the `ee` command?**<br>
-> Ya. Did you read the name of the editor? Eric's Own Editor, I can do what I want, but then so can you.
+> Yes, but this editor is better and deserves the `ee`.
 
 <div align="center">
 <br>
