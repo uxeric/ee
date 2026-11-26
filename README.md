@@ -169,7 +169,7 @@ The project panel lists the folder you started ee in, or the folder of the file 
 </details>
 
 <details>
-<summary><b>Send to herdr</b></summary>
+<summary><b>Send to herdr</b></summary>and 
 
 | Action | Key |
 |---|---|
@@ -201,8 +201,7 @@ These code-editor keys are bound and show "not applicable":
 
 > [!NOTE]
 > **Will you include a plugin system?**<br>
-> Debating it. You can fork and edit the codebase and extend it however you like for the time being.
-boots
+> Debating it. You can fork and extend it however you like for the time being choom.
 
 > [!WARNING]
 > **Your design choices are terrible.**<br>
